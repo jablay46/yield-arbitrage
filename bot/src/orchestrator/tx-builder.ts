@@ -38,6 +38,7 @@ export class TransactionBuilder {
   private executor: Address;
   private gas: GasStrategy;
   private logger: Logger;
+  private usePendingBlock: boolean;
 
   constructor(
     publicClient: BasePublicClient,
@@ -45,7 +46,8 @@ export class TransactionBuilder {
     account: Account,
     executor: Address,
     gas: GasStrategy,
-    logger: Logger
+    logger: Logger,
+    usePendingBlock = true
   ) {
     this.publicClient = publicClient;
     this.walletClient = walletClient;
@@ -53,6 +55,7 @@ export class TransactionBuilder {
     this.executor = executor;
     this.gas = gas;
     this.logger = logger;
+    this.usePendingBlock = usePendingBlock;
   }
 
   async openLoop(req: OpenLoopRequest): Promise<SentTx> {
@@ -142,7 +145,12 @@ export class TransactionBuilder {
     functionName: 'openLoop' | 'closeLoop';
     args: readonly unknown[];
   }): Promise<SentTx> {
-    await this.publicClient.simulateContract(call as never);
+    // Simulate against the "pending" block — on Base that resolves to the
+    // latest Flashblock (~200ms), so we validate against the freshest state
+    await this.publicClient.simulateContract({
+      ...(call as object),
+      blockTag: this.usePendingBlock ? 'pending' : undefined,
+    } as never);
 
     const fees = await this.gas.getFees();
     const hash = await this.walletClient.writeContract({

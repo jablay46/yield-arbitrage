@@ -69,11 +69,31 @@ never reaches the mempool.
 |---|---|---|
 | `EXECUTOR_ADDRESS` | — | deployed LoopingExecutor |
 | `EXECUTOR_PRIVATE_KEY` | — | owner key (live mode only) |
+| `BASE_WS_URL` | — | optional WebSocket endpoint (Flashblocks-speed reads) |
 | `MARGIN_ASSET` / `MARGIN_AMOUNT` | WETH / 1e18 | margin token + amount |
 | `LEVERAGE` | 2 | allowed: 2, 3, 5 |
 | `DRY_RUN` | true | simulate only |
 | `AUTO_TRADE` | false | open the best loop automatically |
 | `MIN_NET_APY_BPS` | 50 | minimum yearly net yield on margin |
+| `USE_PENDING_BLOCK` | true | simulate/read against the Flashblock preconfirmation block |
+
+## Test status
+
+- Fork suite (real Base mainnet state): **16/16 passing**
+- Fuzz suite (pure math): **7/7 passing** — `forge test` without a fork
+- Bot unit tests: **32/32 passing** — `npm test`
+- E2E (anvil fork of Base): full cycle approve → openLoop 2x → closeLoop —
+  margin returned in one tx
+
+## Gas snapshot (Base mainnet fork)
+
+| Function | Gas used |
+|---|---|
+| openLoop 2x (Morpho source) | ~480k |
+| openLoop 2x (Aave source) | ~470k |
+| closeLoop | ~645k |
+
+At 0.01 gwei Base fees both are well under $0.01.
 
 ## Risk warnings
 

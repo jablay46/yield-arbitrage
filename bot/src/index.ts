@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http } from 'viem';
+import { createPublicClient, createWalletClient, http, webSocket, Transport } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
@@ -38,9 +38,14 @@ export class LoopingBot {
     this.config = config;
     this.logger = createLogger(config.logLevel);
 
+    // Prefer the Flashblocks-capable WS endpoint for read/poll traffic;
+    // fall back to HTTP when no WS URL is configured.
+    const readTransport: Transport = config.wsUrl
+      ? webSocket(config.wsUrl)
+      : http(config.rpcUrl);
     const publicClient = createPublicClient({
       chain: base,
-      transport: http(config.rpcUrl),
+      transport: readTransport,
     });
 
     this.rateMonitor = new RateMonitor(publicClient);
@@ -68,7 +73,8 @@ export class LoopingBot {
         config.executorAddress,
         config.healthFactorWarnWad,
         config.healthFactorCriticalWad,
-        this.logger
+        this.logger,
+        config.usePendingBlock
       );
     }
 
@@ -87,7 +93,8 @@ export class LoopingBot {
         account,
         config.executorAddress,
         gasStrategy,
-        this.logger
+        this.logger,
+        config.usePendingBlock
       );
     }
   }

@@ -39,6 +39,7 @@ contract LoopingExecutor is FlashloanBase {
     error RouterNotSet();
     error SlippageExceeded(uint256 amountOut, uint256 minOut);
     error MissingSwapData();
+    error RepayMismatch(uint256 repaid, uint256 expected);
 
     enum Mode {
         Open,
@@ -92,6 +93,7 @@ contract LoopingExecutor is FlashloanBase {
         address _swapRouter
     ) FlashloanBase(_morpho, _aavePool) {
         if (_lendingPool == address(0)) revert ZeroAddress();
+        if (_swapRouter == address(0)) revert ZeroAddress();
         lendingPool = ILendingPool(_lendingPool);
         swapRouter = _swapRouter;
     }
@@ -244,7 +246,13 @@ contract LoopingExecutor is FlashloanBase {
             address(this)
         );
         IERC20(p.borrowAsset).forceApprove(address(lendingPool), debt);
-        lendingPool.repay(p.borrowAsset, debt, VARIABLE_RATE_MODE, address(this));
+        uint256 repaid = lendingPool.repay(
+            p.borrowAsset,
+            debt,
+            VARIABLE_RATE_MODE,
+            address(this)
+        );
+        if (repaid != debt) revert RepayMismatch(repaid, debt);
 
         // 2. Withdraw all collateral
         uint256 withdrawn = lendingPool.withdraw(

@@ -13,6 +13,9 @@ export const BotConfigSchema = z.object({
   network: z.enum(['base']).default('base'),
   rpcUrl: z.string().url(),
 
+  /** Optional WebSocket endpoint (wss://) — Flashblocks-capable reads/polls */
+  wsUrl: z.string().url().optional(),
+
   /** Only required when dryRun = false */
   privateKey: PrivateKeySchema.optional(),
 
@@ -32,10 +35,13 @@ export const BotConfigSchema = z.object({
   healthFactorWarnWad: z.bigint().default(1_200_000_000_000_000_000n), // 1.20
   healthFactorCriticalWad: z.bigint().default(1_100_000_000_000_000_000n), // 1.10
 
-  // Loop control
+      // Loop control
   pollIntervalMs: z.number().default(15_000),
   healthCheckIntervalMs: z.number().default(30_000),
   cooldownMs: z.number().default(60_000),
+
+  /** Base Flashblocks: simulate/read against the ~200ms preconfirmed block */
+  usePendingBlock: z.boolean().default(true),
 
   // Limits
   maxMarginUsd: z.number().default(50_000),
@@ -64,6 +70,7 @@ function boolFromEnv(v: string | undefined, fallback: boolean): boolean {
 export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConfig {
   const raw = {
     rpcUrl: env.RPC_URL ?? env.BASE_RPC_URL ?? 'https://mainnet.base.org',
+    wsUrl: env.BASE_WS_URL,
     privateKey: env.EXECUTOR_PRIVATE_KEY || undefined,
     executorAddress: env.EXECUTOR_ADDRESS || undefined,
     marginAsset: env.MARGIN_ASSET,
@@ -72,6 +79,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConf
     dryRun: boolFromEnv(env.DRY_RUN, true),
     autoTrade: boolFromEnv(env.AUTO_TRADE, false),
     pollIntervalMs: env.POLL_INTERVAL_MS ? Number(env.POLL_INTERVAL_MS) : undefined,
+    usePendingBlock: env.USE_PENDING_BLOCK
+      ? boolFromEnv(env.USE_PENDING_BLOCK, true)
+      : undefined,
     pnlPath: env.PNL_PATH,
     logLevel: env.LOG_LEVEL,
   };

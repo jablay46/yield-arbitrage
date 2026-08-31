@@ -25,7 +25,10 @@ library RateMath {
 
     /**
      * @notice Continuous-compounding factor e^(rate * duration), in ray
-     * @param ratePerSecond Interest rate per second, in ray
+     * @param ratePerSecond Interest rate per second, in ray. MUST be a
+     *        realistic per-second value (for Aave, annual ray rate divided
+     *        by SECONDS_PER_YEAR). Inputs where x = rate*duration/RAY is
+     *        large (>~5) overflow — the fuzz suite pins the safe domain.
      * @param duration Seconds to compound over
      * @dev Taylor expansion of e^x around 0 with x = rate * duration / RAY.
      *      10 iterations give ~1e-4 relative accuracy for x <= ~1.6 (APR up to ~500%).

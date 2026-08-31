@@ -23,28 +23,34 @@ export class HealthMonitor {
   private warnWad: bigint;
   private criticalWad: bigint;
   private logger: Logger;
+  private usePendingBlock: boolean;
 
   constructor(
     client: BasePublicClient,
     executor: Address,
     warnWad: bigint,
     criticalWad: bigint,
-    logger: Logger
+    logger: Logger,
+    usePendingBlock = true
   ) {
     this.client = client;
     this.executor = executor;
     this.warnWad = warnWad;
     this.criticalWad = criticalWad;
     this.logger = logger;
+    this.usePendingBlock = usePendingBlock;
   }
 
   async snapshot(): Promise<HealthSnapshot> {
+    // blockTag 'pending' = latest Flashblock on Base (~200ms fresh)
+    const blockTag = this.usePendingBlock ? ('pending' as const) : undefined;
     const [totalCollateralBase, totalDebtBase, , , , healthFactor] =
       await this.client.readContract({
         address: ADDRESSES.aavePool as Address,
         abi: aavePoolAbi,
         functionName: 'getUserAccountData',
         args: [this.executor],
+        blockTag,
       });
 
     return {

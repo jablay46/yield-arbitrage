@@ -1,10 +1,11 @@
-import { HttpTransport, PublicClient, WalletClient } from 'viem';
+import { PublicClient, Transport, WalletClient } from 'viem';
 import { base } from 'viem/chains';
 
 /**
- * viem's PublicClient is invariant on the chain type (OP-stack chains like
- * Base add a `deposit` transaction type), so clients are typed for Base
- * exactly instead of the generic Chain union.
+ * viem's public/wallet client types are invariant on chain, and Base's
+ * OP-stack differences break the generic Chain union — so the clients used
+ * across the bot are typed for Base exactly. Transport is kept generic so
+ * HTTP and WebSocket (Flashblocks) endpoints are both accepted.
  */
-export type BasePublicClient = PublicClient<HttpTransport, typeof base>;
-export type BaseWalletClient = WalletClient<HttpTransport, typeof base>;
+export type BasePublicClient = PublicClient<Transport, typeof base>;
+export type BaseWalletClient = WalletClient<Transport, typeof base>;
