@@ -167,22 +167,23 @@ export class RateMonitor {
         : Promise.resolve([]),
     ]);
 
+    // Fail-closed: a failed liquidity or debt read leaves the value unknown,
+    // and the affected rate is omitted below (not treated as 0). This stops
+    // autoTrade from selecting a market on a false zero-utilization signal.
     const liquidityByReserveIndex = new Map<number, bigint>();
     liquidityIndex.forEach((reserveIdx, pos) => {
       const liqResult = liquidityResults[pos];
-      liquidityByReserveIndex.set(
-        reserveIdx,
-        liqResult?.status === 'success' ? (liqResult.result as bigint) : 0n,
-      );
+      if (liqResult?.status === 'success') {
+        liquidityByReserveIndex.set(reserveIdx, liqResult.result as bigint);
+      }
     });
 
     const debtByReserveIndex = new Map<number, bigint>();
     debtSupplyIndex.forEach((reserveIdx, pos) => {
       const debtResult = debtSupplyResults[pos];
-      debtByReserveIndex.set(
-        reserveIdx,
-        debtResult?.status === 'success' ? (debtResult.result as bigint) : 0n,
-      );
+      if (debtResult?.status === 'success') {
+        debtByReserveIndex.set(reserveIdx, debtResult.result as bigint);
+      }
     });
 
     const rates: MarketRate[] = [];
@@ -191,11 +192,20 @@ export class RateMonitor {
       const config = configResults[i];
       if (reserve.status !== 'success' || config.status !== 'success') continue;
 
+      // Omit rates with incomplete market data (failed liquidity or debt
+      // reads) rather than degrading to a 0-debt/0-liquidity signal.
+      if (
+        !liquidityByReserveIndex.has(i) ||
+        !debtByReserveIndex.has(i)
+      ) {
+        continue;
+      }
+
       const rd = reserve.result;
       const cfg = config.result;
 
-      const availableLiquidity = liquidityByReserveIndex.get(i) ?? 0n;
-      const totalDebt = debtByReserveIndex.get(i) ?? 0n;
+      const availableLiquidity = liquidityByReserveIndex.get(i)!;
+      const totalDebt = debtByReserveIndex.get(i)!;
 
       const symbol = this.symbolFor(this.watchlist[i]);
 
