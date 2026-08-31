@@ -17,6 +17,7 @@ contract LoopingExecutorForkTest is Test {
     address constant AAVE_POOL = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
     address constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
     address constant SWAP_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
+    address constant AAVE_ORACLE = 0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156;
     address constant WETH = 0x4200000000000000000000000000000000000006;
 
     LoopingExecutor executor;
@@ -26,11 +27,17 @@ contract LoopingExecutorForkTest is Test {
     address debtWETH;
 
     function setUp() public {
+        // Pin the fork block: Aave's Pool implementation on recent Base blocks
+        // uses opcodes the local EVM spec doesn't activate yet (NotActivated
+        // halt on the Aave flashloan path). Override with FORK_BLOCK to run
+        // against a different height.
+        uint256 forkBlock = vm.envOr("FORK_BLOCK", uint256(50_000_000));
         vm.createSelectFork(
-            vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org"))
+            vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org")),
+            forkBlock
         );
 
-        executor = new LoopingExecutor(MORPHO, AAVE_POOL, AAVE_POOL, SWAP_ROUTER);
+        executor = new LoopingExecutor(MORPHO, AAVE_POOL, AAVE_POOL, SWAP_ROUTER, AAVE_ORACLE);
 
         ReserveData memory rd = pool.getReserveData(WETH);
         aWETH = rd.aTokenAddress;

@@ -45,7 +45,8 @@ export class PnLTracker {
     try {
       if (fs.existsSync(this.filePath)) {
         const raw = fs.readFileSync(this.filePath, 'utf8');
-        this.records = JSON.parse(raw) as PnLRecord[];
+        const parsed = JSON.parse(raw) as unknown;
+        this.records = Array.isArray(parsed) ? (parsed as PnLRecord[]) : [];
       }
     } catch {
       // Corrupt file should not crash the bot; start fresh.

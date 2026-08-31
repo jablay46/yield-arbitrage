@@ -60,7 +60,10 @@ export type BotConfig = z.infer<typeof BotConfigSchema>;
 
 function boolFromEnv(v: string | undefined, fallback: boolean): boolean {
   if (v === undefined) return fallback;
-  return ['1', 'true', 'yes'].includes(v.toLowerCase());
+  const s = v.toLowerCase();
+  if (['1', 'true', 'yes'].includes(s)) return true;
+  if (['0', 'false', 'no'].includes(s)) return false;
+  throw new Error(`invalid boolean env value: "${v}" (expected true/false)`);
 }
 
 /**
@@ -78,6 +81,7 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConf
     leverage: env.LEVERAGE ? Number(env.LEVERAGE) : undefined,
     dryRun: boolFromEnv(env.DRY_RUN, true),
     autoTrade: boolFromEnv(env.AUTO_TRADE, false),
+    minNetApyBps: env.MIN_NET_APY_BPS ? Number(env.MIN_NET_APY_BPS) : undefined,
     pollIntervalMs: env.POLL_INTERVAL_MS ? Number(env.POLL_INTERVAL_MS) : undefined,
     usePendingBlock: env.USE_PENDING_BLOCK
       ? boolFromEnv(env.USE_PENDING_BLOCK, true)

@@ -51,10 +51,11 @@ library RateMath {
     }
 
     /**
-     * @notice APY (ray) from a per-second rate (ray)
+     * @notice APY (ray) from a per-second rate (ray).
+     *         Returns the yield over one year, i.e. e^(rate*t) - 1.
      */
     function ratePerSecondToApy(uint256 ratePerSecond) internal pure returns (uint256) {
-        return compound(ratePerSecond, SECONDS_PER_YEAR);
+        return compound(ratePerSecond, SECONDS_PER_YEAR) - RAY;
     }
 
     /**

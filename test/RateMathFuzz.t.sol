@@ -63,9 +63,20 @@ contract RateMathFuzzTest is Test {
         assertEq(back, wad, "wad->ray->wad round trip");
     }
 
-    function testFuzz_mathutils_minmaxclamp(uint256 a, uint256 b) public pure {
-        assertEq(MathUtils.min(a, b) <= a || MathUtils.min(a, b) <= b, true);
-        assertEq(MathUtils.max(a, b) >= a || MathUtils.max(a, b) >= b, true);
+    function testFuzz_mathutils_minmax(uint256 a, uint256 b) public pure {
+        uint256 lo = MathUtils.min(a, b);
+        uint256 hi = MathUtils.max(a, b);
+        assertLe(lo, a, "min <= a");
+        assertLe(lo, b, "min <= b");
+        assertGe(hi, a, "max >= a");
+        assertGe(hi, b, "max >= b");
+    }
+
+    function testFuzz_mathutils_clamp(uint256 value, uint256 lo, uint256 hi) public pure {
+        if (lo > hi) (lo, hi) = (hi, lo);
+        uint256 c = MathUtils.clamp(value, lo, hi);
+        assertGe(c, lo);
+        assertLe(c, hi);
     }
 
     function testFuzz_sqrt_matchesKnown(uint256 x) public pure {

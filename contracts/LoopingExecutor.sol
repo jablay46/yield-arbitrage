@@ -6,6 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 import {FlashloanBase} from "./FlashloanBase.sol";
 import {ILendingPool, ReserveData} from "./interfaces/ILendingPool.sol";
+import {IAaveOracle} from "./interfaces/IAaveOracle.sol";
 
 /**
  * @title LoopingExecutor
@@ -26,6 +27,7 @@ contract LoopingExecutor is FlashloanBase {
 
     uint256 public constant WAD = 1e18;
     uint256 internal constant VARIABLE_RATE_MODE = 2;
+    uint256 internal constant ORACLE_DECIMALS = 1e8;
     /// @dev Buffer added on top of debt when sizing the close flashloan so the
     ///      premium and interest accrued since the debt snapshot are covered.
     uint256 internal constant CLOSE_BUFFER_BPS = 10; // 0.1%
@@ -40,6 +42,7 @@ contract LoopingExecutor is FlashloanBase {
     error SlippageExceeded(uint256 amountOut, uint256 minOut);
     error MissingSwapData();
     error RepayMismatch(uint256 repaid, uint256 expected);
+    error ConversionOverflow();
 
     enum Mode {
         Open,
@@ -64,6 +67,7 @@ contract LoopingExecutor is FlashloanBase {
     }
 
     ILendingPool public lendingPool;
+    IAaveOracle public oracle;
     address public swapRouter;
     uint256 public minHealthFactor = 1.05e18;
     bool public positionOpen;
@@ -90,11 +94,14 @@ contract LoopingExecutor is FlashloanBase {
         address _morpho,
         address _aavePool,
         address _lendingPool,
-        address _swapRouter
+        address _swapRouter,
+        address _oracle
     ) FlashloanBase(_morpho, _aavePool) {
         if (_lendingPool == address(0)) revert ZeroAddress();
         if (_swapRouter == address(0)) revert ZeroAddress();
+        if (_oracle == address(0)) revert ZeroAddress();
         lendingPool = ILendingPool(_lendingPool);
+        oracle = IAaveOracle(_oracle);
         swapRouter = _swapRouter;
     }
 
@@ -120,7 +127,7 @@ contract LoopingExecutor is FlashloanBase {
             p.marginAmount
         );
 
-        uint256 flashAmount = p.marginAmount * (uint256(p.leverage) - 1);
+        uint256 flashAmount = _borrowAmount(p);
 
         positionOpen = true;
         _initiateFlashloan(p.borrowAsset, flashAmount, abi.encode(Mode.Open, p));
@@ -306,6 +313,30 @@ contract LoopingExecutor is FlashloanBase {
 
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
         if (amountOut < minOut) revert SlippageExceeded(amountOut, minOut);
+    }
+
+    /**
+     * @notice Size the open flashloan. For same-asset loops this is the
+     *         simple multiplier; for cross-asset loops it converts the
+     *         margin into borrow-asset units via the Aave price oracle so
+     *         the (leverage-1)-sized debt is priced in the right currency.
+     */
+    function _borrowAmount(
+        LoopParams memory p
+    ) internal view returns (uint256) {
+        if (p.borrowAsset == p.collateralAsset) {
+            return p.marginAmount * (uint256(p.leverage) - 1);
+        }
+
+        uint256 collateralPrice = oracle.getAssetPrice(p.collateralAsset);
+        uint256 borrowPrice = oracle.getAssetPrice(p.borrowAsset);
+
+        // 1e18 => oracle returns 8 decimals, so the ratio is kept in that scale
+        uint256 valueInBorrow =
+            (p.marginAmount * collateralPrice) / borrowPrice;
+        if (valueInBorrow == 0) revert ConversionOverflow();
+
+        return valueInBorrow * (uint256(p.leverage) - 1);
     }
 
     function _sweep(address token) internal {

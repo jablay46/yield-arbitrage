@@ -1,17 +1,25 @@
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http, webSocket, Transport } from 'viem';
+import { createPublicClient, createWalletClient, http, webSocket, Transport, Address } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
 import { BotConfig, loadConfigFromEnv } from './config';
 import { RateMonitor } from './monitor/rate-monitor';
 import { HealthMonitor } from './monitor/health-monitor';
+
 import { findLoopCandidates, LoopCandidate } from './strategy/find-candidates';
 import { RiskEngine } from './position/risk-engine';
 import { PnLTracker } from './position/pnl-tracker';
 import { TransactionBuilder } from './orchestrator/tx-builder';
 import { GasStrategy } from './utils/gas-strategy';
 import { createLogger, Logger } from './utils/logger';
+
+export interface OpenPositionInfo {
+  asset: Address;
+  symbol: string;
+  marginAmount: bigint;
+  leverage: number;
+}
 
 /**
  * Leveraged yield looping bot.
@@ -30,6 +38,7 @@ export class LoopingBot {
   private pnlTracker: PnLTracker;
   private healthMonitor?: HealthMonitor;
   private txBuilder?: TransactionBuilder;
+  private openPosition?: OpenPositionInfo;
 
   private running = false;
   private timers: NodeJS.Timeout[] = [];
@@ -160,7 +169,11 @@ export class LoopingBot {
 
   private async maybeOpen(candidates: LoopCandidate[]): Promise<void> {
     if (this.riskEngine.getOpenPositions().length > 0) return;
-    const best = candidates.find((c) => c.leverage === this.config.leverage);
+    const best = candidates.find(
+      (c) =>
+        c.leverage === this.config.leverage &&
+        c.asset.toLowerCase() === this.config.marginAsset.toLowerCase()
+    );
     if (!best) return;
 
     const check = this.riskEngine.canOpen({
@@ -214,6 +227,12 @@ export class LoopingBot {
       best.marginAmount,
       sent.hash
     );
+    this.openPosition = {
+      asset: best.asset,
+      symbol: best.symbol,
+      marginAmount: best.marginAmount,
+      leverage: best.leverage,
+    };
     this.logger.info(
       `Loop opened: approve=${approve.hash} open=${sent.hash}`
     );
@@ -238,15 +257,32 @@ export class LoopingBot {
           return;
         }
 
+        const closeAsset = this.openPosition?.asset ?? this.config.marginAsset;
         const sent = await this.txBuilder.closeLoop({
-          collateralAsset: this.config.marginAsset,
-          borrowAsset: this.config.marginAsset,
+          collateralAsset: closeAsset,
+          borrowAsset: closeAsset,
           swapData: '0x',
           minSwapOut: 0n,
         });
         if (openPos) {
           this.riskEngine.recordClose(openPos.id, sent.hash);
+          const closedAt = Date.now();
+          this.pnlTracker.record({
+            id: openPos.id,
+            openedAt: openPos.openedAt,
+            closedAt,
+            asset: openPos.asset,
+            leverage: openPos.leverage,
+            marginUsd: 0,
+            durationHours: (closedAt - openPos.openedAt) / 3_600_000,
+            grossYieldUsd: 0,
+            gasCostUsd: 0,
+            netPnlUsd: 0,
+            openTxHash: openPos.openTxHash,
+            closeTxHash: sent.hash,
+          });
         }
+        this.openPosition = undefined;
         this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
       }
     } catch (error) {

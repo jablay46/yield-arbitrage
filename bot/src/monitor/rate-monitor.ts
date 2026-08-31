@@ -76,25 +76,39 @@ export class RateMonitor {
       this.client.multicall({ contracts: configCalls, allowFailure: true }),
     ]);
 
-    // Liquidity needs the aToken address from reserveData first
+    // Liquidity needs the aToken address from reserveData first. Results
+    // are keyed by reserve-result index (not a running counter) so a failed
+    // reserve call doesn't shift later assets onto the wrong aToken balances.
+    const liquidityIndex: number[] = [];
     const liquidityCalls = reserveResults
-      .map((r, i) => ({ r, asset: this.watchlist[i] }))
+      .map((r, i) => ({ r, i, asset: this.watchlist[i] }))
       .filter(({ r }) => r.status === 'success')
-      .map(({ r, asset }) => ({
-        address: asset,
-        abi: erc20Abi,
-        functionName: 'balanceOf' as const,
-        args: [
-          (r as Extract<typeof r, { status: 'success' }>).result.aTokenAddress,
-        ] as const,
-      }));
+      .map(({ r, i, asset }) => {
+        liquidityIndex.push(i);
+        return {
+          address: asset,
+          abi: erc20Abi,
+          functionName: 'balanceOf' as const,
+          args: [
+            (r as Extract<typeof r, { status: 'success' }>).result.aTokenAddress,
+          ] as const,
+        };
+      });
 
     const liquidityResults = liquidityCalls.length
       ? await this.client.multicall({ contracts: liquidityCalls, allowFailure: true })
       : [];
 
+    const liquidityByReserveIndex = new Map<number, bigint>();
+    liquidityIndex.forEach((reserveIdx, pos) => {
+      const liqResult = liquidityResults[pos];
+      liquidityByReserveIndex.set(
+        reserveIdx,
+        liqResult?.status === 'success' ? (liqResult.result as bigint) : 0n,
+      );
+    });
+
     const rates: MarketRate[] = [];
-    let liqIdx = 0;
     for (let i = 0; i < n; i++) {
       const reserve = reserveResults[i];
       const config = configResults[i];
@@ -103,9 +117,7 @@ export class RateMonitor {
       const rd = reserve.result;
       const cfg = config.result;
 
-      const liqResult = liquidityResults[liqIdx++];
-      const availableLiquidity =
-        liqResult?.status === 'success' ? (liqResult.result as bigint) : 0n;
+      const availableLiquidity = liquidityByReserveIndex.get(i) ?? 0n;
 
       const symbol = this.symbolFor(this.watchlist[i]);
 

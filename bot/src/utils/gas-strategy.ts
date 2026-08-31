@@ -55,16 +55,28 @@ export class GasStrategy {
           : priorityCap;
 
       let maxFeePerGas = baseFee + maxPriorityFeePerGas;
-      if (maxFeePerGas > maxFeeCap) maxFeePerGas = maxFeeCap;
+      let priorityFee = maxPriorityFeePerGas;
+      if (maxFeePerGas > maxFeeCap) {
+        maxFeePerGas = maxFeeCap;
+        if (priorityFee > maxFeeCap) {
+          priorityFee = maxFeeCap;
+        }
+      }
+      if (baseFee > 0n && priorityFee > maxFeePerGas - baseFee) {
+        priorityFee = maxFeePerGas - baseFee;
+      }
 
-      return { maxFeePerGas, maxPriorityFeePerGas };
+      return { maxFeePerGas, maxPriorityFeePerGas: priorityFee };
     } catch (error) {
       this.logger?.warn(`getFeeHistory failed, using caps: ${error}`);
+      // Degrade gracefully: keep the priority within the max cap.
+      const priorityCap = BigInt(
+        Math.round(this.config.priorityFeeGwei * 1e9)
+      );
       return {
         maxFeePerGas: maxFeeCap,
-        maxPriorityFeePerGas: BigInt(
-          Math.round(this.config.priorityFeeGwei * 1e9)
-        ),
+        maxPriorityFeePerGas:
+          priorityCap < maxFeeCap ? priorityCap : maxFeeCap,
       };
     }
   }

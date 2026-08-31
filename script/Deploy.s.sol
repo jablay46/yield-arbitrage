@@ -16,6 +16,7 @@ contract Deploy is Script {
     address constant AAVE_POOL = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
     address constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
     address constant SWAP_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
+    address constant AAVE_ORACLE = 0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156;
 
     function run() public {
         uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
@@ -26,7 +27,8 @@ contract Deploy is Script {
             MORPHO,
             AAVE_POOL,
             AAVE_POOL,
-            SWAP_ROUTER
+            SWAP_ROUTER,
+            AAVE_ORACLE
         );
 
         console.log("LoopingExecutor deployed at:", address(executor));

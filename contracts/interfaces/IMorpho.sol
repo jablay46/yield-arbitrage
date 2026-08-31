@@ -4,8 +4,10 @@ pragma solidity ^0.8.20;
 /**
  * @title IMorpho
  * @notice Minimal interface for the Morpho Blue singleton.
- *         Morpho Blue flashloans charge no fee. The borrower must transfer the
- *         exact amount back inside the callback; Morpho checks its balance delta.
+ *         Morpho Blue flashloans charge no fee. Repayment is pulled by Morpho
+ *         via transferFrom after the onMorphoFlashLoan callback returns, so the
+ *         borrower must approve the Morpho contract for the full flashloaned
+ *         amount before the callback ends.
  */
 interface IMorpho {
     /**
