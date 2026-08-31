@@ -3,9 +3,11 @@ pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {LoopingExecutor} from "contracts/LoopingExecutor.sol";
 import {FlashloanBase} from "contracts/FlashloanBase.sol";
+import {IAaveOracle} from "contracts/interfaces/IAaveOracle.sol";
 import {ILendingPool, ReserveData} from "contracts/interfaces/ILendingPool.sol";
 
 /**
@@ -19,9 +21,11 @@ contract LoopingExecutorForkTest is Test {
     address constant SWAP_ROUTER = 0x2626664c2603336E57B271c5C0b26F421741e481;
     address constant AAVE_ORACLE = 0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156;
     address constant WETH = 0x4200000000000000000000000000000000000006;
+    address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
 
-    LoopingExecutor executor;
+    LoopingExecutorHarness executor;
     ILendingPool pool = ILendingPool(AAVE_POOL);
+    IAaveOracle aaveOracle = IAaveOracle(AAVE_ORACLE);
 
     address aWETH;
     address debtWETH;
@@ -37,7 +41,13 @@ contract LoopingExecutorForkTest is Test {
             forkBlock
         );
 
-        executor = new LoopingExecutor(MORPHO, AAVE_POOL, AAVE_POOL, SWAP_ROUTER, AAVE_ORACLE);
+        executor = new LoopingExecutorHarness(
+            MORPHO,
+            AAVE_POOL,
+            AAVE_POOL,
+            SWAP_ROUTER,
+            AAVE_ORACLE
+        );
 
         ReserveData memory rd = pool.getReserveData(WETH);
         aWETH = rd.aTokenAddress;
@@ -65,6 +75,33 @@ contract LoopingExecutorForkTest is Test {
     }
 
     // ---------- open ----------
+
+    function test_borrowAmount_convertsWethToUsdcBaseUnits() public view {
+        LoopingExecutor.LoopParams memory p = _params(2, 1 ether, 0);
+        p.borrowAsset = USDC;
+
+        uint256 expected = Math.mulDiv(
+            1 ether,
+            aaveOracle.getAssetPrice(WETH),
+            aaveOracle.getAssetPrice(USDC) * 1e12
+        );
+
+        assertEq(executor.borrowAmount(p), expected);
+    }
+
+    function test_borrowAmount_convertsUsdcToWethBaseUnits() public view {
+        uint256 margin = 4_000e6;
+        LoopingExecutor.LoopParams memory p = _params(2, margin, 0);
+        p.collateralAsset = USDC;
+
+        uint256 expected = Math.mulDiv(
+            margin,
+            aaveOracle.getAssetPrice(USDC) * 1e12,
+            aaveOracle.getAssetPrice(WETH)
+        );
+
+        assertEq(executor.borrowAmount(p), expected);
+    }
 
     function test_openLoop_2x_morpho() public {
         executor.openLoop(_params(2, 1 ether, 0));
@@ -252,6 +289,22 @@ contract LoopingExecutorForkTest is Test {
         vm.prank(newOwner);
         executor.acceptOwnership();
         assertEq(executor.owner(), newOwner);
+    }
+}
+
+contract LoopingExecutorHarness is LoopingExecutor {
+    constructor(
+        address morpho,
+        address aavePool,
+        address lendingPool,
+        address swapRouter,
+        address aaveOracle
+    ) LoopingExecutor(morpho, aavePool, lendingPool, swapRouter, aaveOracle) {}
+
+    function borrowAmount(
+        LoopParams calldata p
+    ) external view returns (uint256) {
+        return _borrowAmount(p);
     }
 }
 

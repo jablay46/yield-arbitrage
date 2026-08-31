@@ -70,13 +70,20 @@ contract RateMathFuzzTest is Test {
         assertLe(lo, b, "min <= b");
         assertGe(hi, a, "max >= a");
         assertGe(hi, b, "max >= b");
+        assertTrue(lo == a || lo == b, "min must equal an input");
+        assertTrue(hi == a || hi == b, "max must equal an input");
     }
 
     function testFuzz_mathutils_clamp(uint256 value, uint256 lo, uint256 hi) public pure {
         if (lo > hi) (lo, hi) = (hi, lo);
         uint256 c = MathUtils.clamp(value, lo, hi);
-        assertGe(c, lo);
-        assertLe(c, hi);
+        if (value < lo) {
+            assertEq(c, lo, "below range clamps to lo");
+        } else if (value > hi) {
+            assertEq(c, hi, "above range clamps to hi");
+        } else {
+            assertEq(c, value, "in-range value is unchanged");
+        }
     }
 
     function testFuzz_sqrt_matchesKnown(uint256 x) public pure {

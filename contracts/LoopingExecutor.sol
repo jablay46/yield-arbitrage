@@ -2,7 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {FlashloanBase} from "./FlashloanBase.sol";
 import {ILendingPool, ReserveData} from "./interfaces/ILendingPool.sol";
@@ -330,13 +332,61 @@ contract LoopingExecutor is FlashloanBase {
 
         uint256 collateralPrice = oracle.getAssetPrice(p.collateralAsset);
         uint256 borrowPrice = oracle.getAssetPrice(p.borrowAsset);
+        uint8 collateralDecimals = IERC20Metadata(p.collateralAsset).decimals();
+        uint8 borrowDecimals = IERC20Metadata(p.borrowAsset).decimals();
 
-        // 1e18 => oracle returns 8 decimals, so the ratio is kept in that scale
-        uint256 valueInBorrow =
-            (p.marginAmount * collateralPrice) / borrowPrice;
+        uint256 valueInBorrow;
+
+        if (borrowDecimals > collateralDecimals) {
+            uint256 decimalDifference = borrowDecimals - collateralDecimals;
+            if (decimalDifference > 77) revert ConversionOverflow();
+            uint256 scale = 10 ** decimalDifference;
+
+            valueInBorrow = Math.mulDiv(
+                p.marginAmount,
+                collateralPrice,
+                borrowPrice
+            );
+
+            // Preserve the remainder from the price conversion before scaling
+            // up, while keeping both multiplications full-precision.
+            uint256 scaledRemainder = Math.mulDiv(
+                mulmod(p.marginAmount, collateralPrice, borrowPrice),
+                scale,
+                borrowPrice
+            );
+            if (
+                valueInBorrow >
+                (type(uint256).max - scaledRemainder) / scale
+            ) revert ConversionOverflow();
+            valueInBorrow = valueInBorrow * scale + scaledRemainder;
+        } else if (collateralDecimals > borrowDecimals) {
+            uint256 decimalDifference = collateralDecimals - borrowDecimals;
+            if (decimalDifference > 77) revert ConversionOverflow();
+            uint256 scale = 10 ** decimalDifference;
+            if (borrowPrice > type(uint256).max / scale) {
+                revert ConversionOverflow();
+            }
+            valueInBorrow = Math.mulDiv(
+                p.marginAmount,
+                collateralPrice,
+                borrowPrice * scale
+            );
+        } else {
+            valueInBorrow = Math.mulDiv(
+                p.marginAmount,
+                collateralPrice,
+                borrowPrice
+            );
+        }
+
         if (valueInBorrow == 0) revert ConversionOverflow();
 
-        return valueInBorrow * (uint256(p.leverage) - 1);
+        uint256 leverageMultiplier = uint256(p.leverage) - 1;
+        if (valueInBorrow > type(uint256).max / leverageMultiplier) {
+            revert ConversionOverflow();
+        }
+        return valueInBorrow * leverageMultiplier;
     }
 
     function _sweep(address token) internal {
