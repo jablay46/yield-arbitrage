@@ -67,17 +67,29 @@ abstract contract FlashloanBase is
         preferredSource = FlashloanSource.Morpho;
     }
 
+    /**
+     * @notice Set the preferred flashloan source (Morpho or Aave)
+     * @param source The flashloan source to use (Morpho = 0% fee, Aave = 0.05% fee)
+     */
     function setPreferredSource(FlashloanSource source) external onlyOwner {
         preferredSource = source;
         emit FlashloanSourceChanged(source);
     }
 
+    /**
+     * @notice Update the Aave pool address
+     * @param _aavePool The new Aave pool address
+     */
     function setAavePool(address _aavePool) external onlyOwner {
         if (_aavePool == address(0)) revert ZeroAddress();
         aavePool = _aavePool;
         emit AavePoolUpdated(_aavePool);
     }
 
+    /**
+     * @notice Update the Morpho Blue contract address
+     * @param _morpho The new Morpho Blue address
+     */
     function setMorpho(address _morpho) external onlyOwner {
         if (_morpho == address(0)) revert ZeroAddress();
         morpho = _morpho;

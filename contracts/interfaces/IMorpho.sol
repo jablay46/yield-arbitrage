@@ -28,5 +28,10 @@ interface IMorpho {
  * @notice Callback invoked by Morpho Blue on the flashloan initiator.
  */
 interface IMorphoFlashLoanCallback {
+    /**
+     * @notice Callback invoked by Morpho Blue during a flashloan
+     * @param assets The amount of assets flashloaned
+     * @param data Arbitrary data forwarded from the flashLoan call
+     */
     function onMorphoFlashLoan(uint256 assets, bytes calldata data) external;
 }

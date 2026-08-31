@@ -81,14 +81,33 @@ library RateMath {
  * @notice General math utilities
  */
 library MathUtils {
+    /**
+     * @notice Return the minimum of two values
+     * @param a First value
+     * @param b Second value
+     * @return The smaller of the two values
+     */
     function min(uint256 a, uint256 b) internal pure returns (uint256) {
         return a < b ? a : b;
     }
 
+    /**
+     * @notice Return the maximum of two values
+     * @param a First value
+     * @param b Second value
+     * @return The larger of the two values
+     */
     function max(uint256 a, uint256 b) internal pure returns (uint256) {
         return a > b ? a : b;
     }
 
+    /**
+     * @notice Clamp a value between a minimum and maximum
+     * @param value The value to clamp
+     * @param minValue The minimum allowed value
+     * @param maxValue The maximum allowed value
+     * @return The clamped value
+     */
     function clamp(
         uint256 value,
         uint256 minValue,
@@ -99,6 +118,12 @@ library MathUtils {
         return value;
     }
 
+    /**
+     * @notice Calculate the average of two values
+     * @param a First value
+     * @param b Second value
+     * @return The average of the two values (overflow-safe)
+     */
     function average(uint256 a, uint256 b) internal pure returns (uint256) {
         // Overflow-safe average
         return (a & b) + ((a ^ b) >> 1);

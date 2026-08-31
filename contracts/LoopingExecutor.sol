@@ -176,6 +176,13 @@ contract LoopingExecutor is FlashloanBase {
         return hf;
     }
 
+    /**
+     * @notice Execute strategy logic while holding flashloaned funds
+     * @param asset The flashloaned asset
+     * @param amount The flashloaned amount
+     * @param premium The flashloan fee
+     * @param data Encoded operation parameters (Mode + LoopParams or CloseParams)
+     */
     function _executeWithFunds(
         address asset,
         uint256 amount,
@@ -192,6 +199,12 @@ contract LoopingExecutor is FlashloanBase {
         }
     }
 
+    /**
+     * @notice Execute the open loop operation during flashloan callback
+     * @param flashAmount The amount of borrow asset received from the flashloan
+     * @param premium The flashloan fee to be repaid
+     * @param p Loop parameters including collateral, borrow asset, margin, and leverage
+     */
     function _executeOpen(
         uint256 flashAmount,
         uint256 premium,
@@ -243,6 +256,13 @@ contract LoopingExecutor is FlashloanBase {
         );
     }
 
+    /**
+     * @notice Execute the close loop operation during flashloan callback
+     * @param flashAsset The flashloaned asset (same as borrow asset)
+     * @param flashAmount The amount borrowed to repay the debt
+     * @param premium The flashloan fee
+     * @param p Close parameters including collateral and borrow assets, swap data
+     */
     function _executeClose(
         address flashAsset,
         uint256 flashAmount,
@@ -389,6 +409,10 @@ contract LoopingExecutor is FlashloanBase {
         return valueInBorrow * leverageMultiplier;
     }
 
+    /**
+     * @notice Transfer the entire balance of a token to the owner
+     * @param token The token address to sweep
+     */
     function _sweep(address token) internal {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
@@ -396,16 +420,28 @@ contract LoopingExecutor is FlashloanBase {
         }
     }
 
+    /**
+     * @notice Update the Aave lending pool address
+     * @param _lendingPool The new lending pool address
+     */
     function setLendingPool(address _lendingPool) external onlyOwner {
         if (_lendingPool == address(0)) revert ZeroAddress();
         lendingPool = ILendingPool(_lendingPool);
     }
 
+    /**
+     * @notice Update the swap router address for cross-asset loops
+     * @param _swapRouter The new swap router address
+     */
     function setSwapRouter(address _swapRouter) external onlyOwner {
         swapRouter = _swapRouter;
         emit SwapRouterUpdated(_swapRouter);
     }
 
+    /**
+     * @notice Update the minimum health factor required after opening a loop
+     * @param _minHealthFactor The new minimum health factor in WAD units (e.g., 1.05e18)
+     */
     function setMinHealthFactor(uint256 _minHealthFactor) external onlyOwner {
         minHealthFactor = _minHealthFactor;
         emit MinHealthFactorUpdated(_minHealthFactor);

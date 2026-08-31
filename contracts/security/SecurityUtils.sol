@@ -60,18 +60,31 @@ abstract contract Ownable2Step {
         owner = msg.sender;
     }
 
+    /**
+     * @notice Initiate ownership transfer to a new address
+     * @param newOwner The address of the new owner
+     * @dev The new owner must call acceptOwnership to complete the transfer
+     */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         pendingOwner = newOwner;
         emit OwnershipTransferStarted(owner, newOwner);
     }
 
+    /**
+     * @notice Accept ownership transfer
+     * @dev Only callable by the pending owner
+     */
     function acceptOwnership() external onlyPendingOwner {
         emit OwnershipTransferred(owner, pendingOwner);
         owner = pendingOwner;
         pendingOwner = address(0);
     }
 
+    /**
+     * @notice Renounce ownership, leaving the contract without an owner
+     * @dev This action is irreversible and will disable all onlyOwner functions
+     */
     function renounceOwnership() external onlyOwner {
         emit OwnershipTransferred(owner, address(0));
         owner = address(0);
@@ -101,15 +114,27 @@ abstract contract Pausable {
 
     bool private _paused;
 
+    /**
+     * @notice Check if the contract is currently paused
+     * @return True if the contract is paused, false otherwise
+     */
     function paused() public view returns (bool) {
         return _paused;
     }
 
+    /**
+     * @notice Internal function to pause the contract
+     * @dev Triggers the Paused event and sets the paused state to true
+     */
     function _pause() internal whenNotPaused {
         _paused = true;
         emit Paused(msg.sender);
     }
 
+    /**
+     * @notice Internal function to unpause the contract
+     * @dev Triggers the Unpaused event and sets the paused state to false
+     */
     function _unpause() internal whenPaused {
         _paused = false;
         emit Unpaused(msg.sender);
@@ -131,10 +156,18 @@ abstract contract Pausable {
  * @notice Combined security base: 2-step ownership, reentrancy guard, circuit breaker
  */
 abstract contract SecurityUtils is Ownable2Step, ReentrancyGuard, Pausable {
+    /**
+     * @notice Pause the contract to prevent critical operations
+     * @dev Only callable by the owner
+     */
     function pause() external onlyOwner {
         _pause();
     }
 
+    /**
+     * @notice Unpause the contract to resume operations
+     * @dev Only callable by the owner
+     */
     function unpause() external onlyOwner {
         _unpause();
     }
