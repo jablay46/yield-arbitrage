@@ -38,9 +38,13 @@ export function findLoopCandidates(
 
   for (const rate of rates) {
     if (!rate.isActive || rate.isFrozen || !rate.borrowingEnabled) continue;
-    if (rate.availableLiquidity < flashloanAmountFor(marginAmount, 5)) continue;
 
     for (const leverage of LEVERAGE_LEVELS) {
+      // Evaluate liquidity per leverage level so a reserve that can fund a
+      // 2x or 3x loop is not discarded merely because it cannot fund 5x.
+      const flashloanAmount = flashloanAmountFor(marginAmount, leverage);
+      if (rate.availableLiquidity < flashloanAmount) continue;
+
       const net = netApyBps(rate.supplyApyBps, rate.borrowAprBps, leverage);
       if (net < minNetApyBps) continue;
 

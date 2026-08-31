@@ -61,12 +61,22 @@ abstract contract Ownable2Step {
     }
 
     /**
-     * @notice Initiate ownership transfer to a new address
-     * @param newOwner The address of the new owner
-     * @dev The new owner must call acceptOwnership to complete the transfer
+     * @notice Initiate ownership transfer to a new address, or cancel a
+     *         pending transfer by passing address(0).
+     * @param newOwner The address of the new owner, or address(0) to cancel
+     * @dev The new owner must call acceptOwnership to complete the transfer.
+     *      Passing address(0) clears any pending nomination without changing
+     *      the current owner.
      */
     function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
+        if (newOwner == address(0)) {
+            // Cancel any pending transfer without relinquishing control.
+            if (pendingOwner != address(0)) {
+                emit OwnershipTransferStarted(owner, address(0));
+                pendingOwner = address(0);
+            }
+            return;
+        }
         pendingOwner = newOwner;
         emit OwnershipTransferStarted(owner, newOwner);
     }
@@ -83,11 +93,14 @@ abstract contract Ownable2Step {
 
     /**
      * @notice Renounce ownership, leaving the contract without an owner
-     * @dev This action is irreversible and will disable all onlyOwner functions
+     * @dev This action is irreversible and will disable all onlyOwner
+     *      functions. Any pending nomination is cleared so a previously
+     *      nominated account cannot accept ownership afterwards.
      */
     function renounceOwnership() external onlyOwner {
         emit OwnershipTransferred(owner, address(0));
         owner = address(0);
+        pendingOwner = address(0);
     }
 
     modifier onlyOwner() {

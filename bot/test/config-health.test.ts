@@ -87,16 +87,6 @@ describe('config schema', () => {
 
 describe('HealthMonitor.classify', () => {
   const WAD = 10n ** 18n;
-  const monitor = HealthMonitor.prototype as {
-    classify: (s: {
-      totalCollateralBase: bigint;
-      totalDebtBase: bigint;
-      healthFactor: bigint;
-      timestamp: number;
-    }) => 'ok' | 'warn' | 'deleverage';
-    warnWad: bigint;
-    criticalWad: bigint;
-  };
 
   function classify(
     healthFactorWad: bigint,
@@ -104,8 +94,8 @@ describe('HealthMonitor.classify', () => {
   ): 'ok' | 'warn' | 'deleverage' {
     const bound = Object.create(HealthMonitor.prototype) as HealthMonitor;
     Object.assign(bound, {
-      warnWad: 1.2 * Number(WAD) === 0 ? 1200000000000000000n : 1200000000000000000n,
-      criticalWad: 1100000000000000000n,
+      warnWad: 1_200_000_000_000_000_000n,
+      criticalWad: 1_100_000_000_000_000_000n,
     });
     return bound.classify({
       totalCollateralBase: 0n,
@@ -130,6 +120,4 @@ describe('HealthMonitor.classify', () => {
   it('deleverages below critical', () => {
     expect(classify(105n * WAD / 100n, 100n)).toBe('deleverage'); // 1.05
   });
-
-  void monitor;
 });
