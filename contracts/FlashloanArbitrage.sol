@@ -27,6 +27,10 @@ contract FlashloanArbitrage is IFlashLoanReceiver {
     address public aavePool;
     address public morpho;
 
+    // Preferred flashloan source (0 = Morpho, 1 = Aave)
+    // Default to Morpho (0 fee)
+    uint8 public preferredSource; // 0 = Morpho, 1 = Aave
+
     // Flashloan fee (0.09% = 900)
     uint256 public constant AAVE_FEE = 900;
     uint256 public constant FEE_BASE = 1000000;
@@ -48,16 +52,51 @@ contract FlashloanArbitrage is IFlashLoanReceiver {
         uint256 amount,
         uint256 fee
     );
+    event FlashloanSourceChanged(uint8 newSource);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
         _;
     }
 
-    constructor(address _aavePool, address _morpho) {
+    /**
+     * @notice Constructor
+     * @param _morpho Morpho address (primary flashloan source - 0 fee)
+     * @param _aavePool Aave V3 pool address (fallback - 0.09% fee)
+     */
+    constructor(address _morpho, address _aavePool) {
         owner = msg.sender;
-        aavePool = _aavePool;
         morpho = _morpho;
+        aavePool = _aavePool;
+        preferredSource = 0; // Default to Morpho (0 fee)
+    }
+
+    /**
+     * @notice Execute flashloan using preferred source (Morpho by default)
+     * @param asset The asset to flashloan
+     * @param amount The amount to flashloan
+     * @param params Additional params encoded
+     */
+    function executeFlashloan(
+        address asset,
+        uint256 amount,
+        bytes calldata params
+    ) external onlyOwner {
+        if (preferredSource == 0) {
+            executeMorphoFlashloan(asset, amount, params);
+        } else {
+            executeAaveFlashloan(asset, amount, params);
+        }
+    }
+
+    /**
+     * @notice Set preferred flashloan source
+     * @param source 0 = Morpho (default, 0 fee), 1 = Aave (0.09% fee)
+     */
+    function setPreferredSource(uint8 source) external onlyOwner {
+        require(source <= 1, "Invalid source");
+        preferredSource = source;
+        emit FlashloanSourceChanged(source);
     }
 
     /**

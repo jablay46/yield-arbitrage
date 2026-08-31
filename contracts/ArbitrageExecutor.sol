@@ -44,13 +44,21 @@ contract ArbitrageExecutor is FlashloanArbitrage {
     event RepayCompleted(address indexed asset, uint256 amount, address indexed protocol);
     event WithdrawCompleted(address indexed asset, uint256 amount, address indexed protocol);
 
+    /**
+     * @notice Constructor
+     * @param _morpho Morpho address (primary flashloan - 0 fee)
+     * @param _aavePool Aave V3 pool (fallback)
+     * @param _supplyPool Protocol to supply (higher APY)
+     * @param _borrowPool Protocol to borrow from (lower APR)
+     * @param _swapRouter Uniswap/Curve router for swaps
+     */
     constructor(
-        address _aavePool,
         address _morpho,
+        address _aavePool,
         address _supplyPool,
         address _borrowPool,
         address _swapRouter
-    ) FlashloanArbitrage(_aavePool, _morpho) {
+    ) FlashloanArbitrage(_morpho, _aavePool) {
         supplyPool = _supplyPool;
         borrowPool = _borrowPool;
         swapRouter = _swapRouter;
