@@ -1,218 +1,102 @@
-import { PublicClient } from 'viem';
+import { BasePublicClient } from '../client-types';
+import { Logger } from '../utils/logger';
 
-/**
- * Gas strategy configuration
- */
 export interface GasStrategyConfig {
-  // Max gas price willing to pay (in gwei)
   maxGasPriceGwei: number;
-  
-  // Priority fee for miners (in gwei)
   priorityFeeGwei: number;
-  
-  // Gas estimation buffer (percentage)
   gasBufferPercent: number;
-  
-  // Use EIP-1559
-  useEip1559: boolean;
-  
-  // Target block time (for Base ~2s)
-  targetBlockTime: number;
 }
 
-/**
- * Calculated gas fees
- */
 export interface GasFees {
-  gasPrice: bigint;
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
-  estimatedGas: bigint;
-  totalCostWei: bigint;
-  totalCostUsd: number;
 }
+
+const GWEI = 10n ** 9n;
 
 /**
- * Gas strategy
- * Dynamic gas pricing for optimal transaction inclusion
+ * EIP-1559 gas pricing for Base with a hard cap.
  */
 export class GasStrategy {
-  private client: PublicClient;
+  private client: BasePublicClient;
   private config: GasStrategyConfig;
-  private priceCache: { fees: GasFees; timestamp: number } | null = null;
-  private cacheDuration: number = 5000; // 5 seconds
-  
-  constructor(client: PublicClient, config: Partial<GasStrategyConfig> = {}) {
+  private logger?: Logger;
+
+  constructor(client: BasePublicClient, config: GasStrategyConfig, logger?: Logger) {
     this.client = client;
-    
-    this.config = {
-      maxGasPriceGwei: config.maxGasPriceGwei ?? 50,
-      priorityFeeGwei: config.priorityFeeGwei ?? 2,
-      gasBufferPercent: config.gasBufferPercent ?? 20,
-      useEip1559: config.useEip1559 ?? true,
-      targetBlockTime: config.targetBlockTime ?? 2,
-    };
+    this.config = config;
+    this.logger = logger;
   }
-  
-  /**
-   * Get current gas fees
-   */
-  async getGasFees(estimatedGas: bigint): Promise<GasFees> {
-    // Check cache
-    if (this.priceCache && Date.now() - this.priceCache.timestamp < this.cacheDuration) {
-      return {
-        ...this.priceCache.fees,
-        estimatedGas,
-        totalCostWei: estimatedGas * this.priceCache.fees.gasPrice,
-        totalCostUsd: 0, // Will be calculated
-      };
-    }
-    
+
+  async getFees(): Promise<GasFees> {
+    const maxFeeCap = BigInt(Math.round(this.config.maxGasPriceGwei * 1e9));
+
     try {
-      // Get fee history for historical data
       const feeHistory = await this.client.getFeeHistory({
         blockCount: 5,
-        rewardPercentiles: [50, 75, 90],
+        rewardPercentiles: [50],
       });
-      
-      // Get current block data
-      const [block, gasPrice] = await Promise.all([
-        this.client.getBlock(),
-        this.client.getGasPrice(),
-      ]);
-      
-      // Calculate fees
-      const baseFee = block.baseFeePerGas || gasPrice;
-      
-      // Priority fee (median of recent rewards)
-      const priorityFee = this.calculatePriorityFee(feeHistory.reward);
-      
-      // Cap priority fee
-      const maxPriorityFeePerGas = this.toWei(this.config.priorityFeeGwei);
-      const finalPriorityFee = priorityFee > maxPriorityFeePerGas 
-        ? maxPriorityFeePerGas 
-        : priorityFee;
-      
-      // Max fee per gas (base + priority + buffer)
-      const maxFeePerGas = this.config.useEip1559
-        ? baseFee + finalPriorityFee
-        : gasPrice;
-      
-      // Cap at max
-      const maxFeeCap = this.toWei(this.config.maxGasPriceGwei);
-      const finalMaxFeePerGas = maxFeePerGas > maxFeeCap ? maxFeeCap : maxFeePerGas;
-      
-      const gasPriceResult = this.config.useEip1559 ? finalMaxFeePerGas : gasPrice;
-      
-      const fees: GasFees = {
-        gasPrice: gasPriceResult,
-        maxFeePerGas: finalMaxFeePerGas,
-        maxPriorityFeePerGas: finalPriorityFee,
-        estimatedGas,
-        totalCostWei: estimatedGas * gasPriceResult,
-        totalCostUsd: 0,
-      };
-      
-      // Cache result
-      this.priceCache = {
-        fees,
-        timestamp: Date.now(),
-      };
-      
-      return fees;
-      
+
+      const baseFee =
+        feeHistory.baseFeePerGas[feeHistory.baseFeePerGas.length - 1] ?? 0n;
+
+      const rewards = feeHistory.reward?.map((r) => r[0] ?? 0n) ?? [];
+      const medianReward =
+        rewards.length > 0
+          ? [...rewards].sort((a, b) => (a < b ? -1 : 1))[
+              Math.floor(rewards.length / 2)
+            ]
+          : 0n;
+
+      const priorityCap = BigInt(Math.round(this.config.priorityFeeGwei * 1e9));
+      const maxPriorityFeePerGas =
+        medianReward > 0n && medianReward < priorityCap
+          ? medianReward
+          : priorityCap;
+
+      let maxFeePerGas = baseFee + maxPriorityFeePerGas;
+      let priorityFee = maxPriorityFeePerGas;
+      if (maxFeePerGas > maxFeeCap) {
+        maxFeePerGas = maxFeeCap;
+        if (priorityFee > maxFeeCap) {
+          priorityFee = maxFeeCap;
+        }
+      }
+      if (baseFee > 0n && priorityFee > maxFeePerGas - baseFee) {
+        priorityFee = maxFeePerGas - baseFee;
+      }
+
+      return { maxFeePerGas, maxPriorityFeePerGas: priorityFee };
     } catch (error) {
-      // Fallback to simple gas price
-      const gasPrice = await this.client.getGasPrice();
-      const cappedGasPrice = this.capGasPrice(gasPrice);
-      
+      this.logger?.warn(`getFeeHistory failed, using caps: ${error}`);
+      // Degrade gracefully: keep the priority within the max cap.
+      const priorityCap = BigInt(
+        Math.round(this.config.priorityFeeGwei * 1e9)
+      );
       return {
-        gasPrice: cappedGasPrice,
-        maxFeePerGas: cappedGasPrice,
-        maxPriorityFeePerGas: this.toWei(this.config.priorityFeeGwei),
-        estimatedGas,
-        totalCostWei: estimatedGas * cappedGasPrice,
-        totalCostUsd: 0,
+        maxFeePerGas: maxFeeCap,
+        maxPriorityFeePerGas:
+          priorityCap < maxFeeCap ? priorityCap : maxFeeCap,
       };
     }
   }
-  
-  /**
-   * Calculate priority fee from reward history
-   */
-  private calculatePriorityFee(rewards: bigint[][]): bigint {
-    if (!rewards || rewards.length === 0) {
-      return this.toWei(this.config.priorityFeeGwei);
-    }
-    
-    // Get median of median rewards
-    const medianRewards = rewards.map(r => r[1] || 0n);
-    medianRewards.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    
-    const mid = Math.floor(medianRewards.length / 2);
-    return medianRewards[mid] || this.toWei(this.config.priorityFeeGwei);
+
+  /** Apply the configured buffer to a gas estimate. */
+  applyGasBuffer(estimate: bigint): bigint {
+    return estimate + (estimate * BigInt(this.config.gasBufferPercent)) / 100n;
   }
-  
-  /**
-   * Cap gas price at maximum
-   */
-  private capGasPrice(gasPrice: bigint): bigint {
-    const maxPrice = this.toWei(this.config.maxGasPriceGwei);
-    return gasPrice > maxPrice ? maxPrice : gasPrice;
-  }
-  
-  /**
-   * Convert gwei to wei
-   */
-  private toWei(gwei: number): bigint {
-    return BigInt(Math.floor(gwei * 1e9));
-  }
-  
-  /**
-   * Calculate total gas cost in USD
-   */
-  async calculateGasCostUsd(estimatedGas: bigint, ethPrice: number = 3000): Promise<number> {
-    const fees = await this.getGasFees(estimatedGas);
-    const costEth = Number(fees.totalCostWei) / 1e18;
-    return costEth * ethPrice;
-  }
-  
-  /**
-   * Check if current gas prices are favorable
-   */
+
   async isGasFavorable(): Promise<boolean> {
     const gasPrice = await this.client.getGasPrice();
-    const maxPrice = this.toWei(this.config.maxGasPriceGwei);
-    
-    // Gas is favorable if below 50% of max
-    return gasPrice < maxPrice / 2n;
+    return gasPrice < (BigInt(this.config.maxGasPriceGwei) * GWEI) / 2n;
   }
-  
-  /**
-   * Wait for favorable gas conditions
-   */
-  async waitForFavorableGas(timeoutMs: number = 60000): Promise<void> {
-    const startTime = Date.now();
-    
-    while (Date.now() - startTime < timeoutMs) {
-      if (await this.isGasFavorable()) {
-        return;
-      }
-      await new Promise(resolve => setTimeout(resolve, 5000));
-    }
-    
-    throw new Error('Timeout waiting for favorable gas');
-  }
-  
-  /**
-   * Update configuration
-   */
-  updateConfig(config: Partial<GasStrategyConfig>): void {
-    this.config = {
-      ...this.config,
-      ...config,
-    };
+
+  async estimateCostUsd(
+    gasEstimate: bigint,
+    ethPriceUsd: number
+  ): Promise<number> {
+    const fees = await this.getFees();
+    const costWei = gasEstimate * fees.maxFeePerGas;
+    return (Number(costWei) / 1e18) * ethPriceUsd;
   }
 }
-
-export default GasStrategy;

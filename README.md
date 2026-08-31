@@ -1,156 +1,112 @@
-# Yield Arbitrage Bot
+# Leveraged Yield Looping on Base
 
-A yield arbitrage trading bot with flashloan support for the Base network. Monitors lending protocol rates and executes arbitrage opportunities automatically.
+Leveraged looping executor with flashloans on **Base mainnet** — built to run
+real transactions on Aave V3 with free flashloans from Morpho Blue.
 
-## Features
+## Strategy
 
-- **Flashloan Integration**: Aave V3, Morpho, Moonwell
-- **Real-time Rate Monitoring**: Continuous monitoring of lending rates
-- **Automated Arbitrage**: Detects and executes yield spread opportunities
-- **Risk Management**: Built-in risk engine and PnL tracking
-- **TypeScript Bot**: Off-chain monitoring and transaction building
+For a margin `C` and leverage `L` (2x/3x/5x) on the same asset:
 
-## Smart Contracts
+1. Flashloan `(L−1)·C` from Morpho Blue (0% fee) or Aave V3 (5 bps premium).
+2. Supply margin + flashloan → Aave V3 as collateral (`L·C`).
+3. Borrow `(L−1)·C` + premium against it.
+4. Repay the flashloan. Result: leveraged supply position.
 
-| Contract | Description |
-|----------|-------------|
-| `FlashloanArbitrage.sol` | Core flashloan receiver |
-| `ArbitrageExecutor.sol` | Lending protocol arbitrage logic |
-| `AaveAdapter.sol` | Aave V3 integration |
-| `MorphoAdapter.sol` | Morpho integration |
-| `MoonwellAdapter.sol` | Moonwell integration |
+Net APY on the margin = `L·supplyAPY − (L−1)·borrowAPR`. The loop earns when
+the supply yield beats the borrow cost; the built-in health-factor guard
+(`HF = L·LT/(L−1)`, must stay ≥ 1.05 by default) blocks unsafe opens.
+Unwinding (`closeLoop`) is flashloan-powered and returns the margin in one tx.
 
-## Bot Components
+## Contracts
 
-| File | Description |
-|------|-------------|
-| `rate-monitor.ts` | Real-time lending rate monitoring |
-| `opportunity-filter.ts` | Profitability filtering |
-| `tx-builder.ts` | Transaction construction |
-| `risk-engine.ts` | Risk assessment |
-| `pnl-tracker.ts` | Profit/Loss tracking |
+| File | Purpose |
+|---|---|
+| `contracts/LoopingExecutor.sol` | open/close loops; leverage 2x/3x/5x; same-asset mode plus cross-asset mode via the pool's atomic swap callback (atomicLoop model) |
+| `contracts/FlashloanBase.sol` | Aave V3 + Morpho Blue flashloan base with initiator validation |
+| `contracts/security/SecurityUtils.sol` | two-step ownership, pausable, reentrancy guard, emergency withdraw |
+| `contracts/libraries/RateMath.sol` | health factor math (WAD) |
+| `contracts/interfaces/*` | Aave V3 + Morpho Blue interfaces |
 
-## Clone & Setup
+## Development
 
 ```bash
-# Clone repository
-git clone https://github.com/jablay46/yield-arbitrage.git
-cd yield-arbitrage
-
-# Install dependencies
-npm install
-forge install
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your settings (see below)
-```
-
-## Environment Variables
-
-Edit `.env` file with the following:
-
-```bash
-# RPC URLs
-BASE_RPC_URL=https://mainnet.base.org
-BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
-
-# Private Keys (DO NOT COMMIT)
-DEPLOYER_PRIVATE_KEY=your_private_key_here
-ARBITER_PRIVATE_KEY=your_arbitrer_private_key
-
-# Contract Addresses (Base Mainnet)
-AAVE_POOL_V3_ADDRESS=0xA238Dd80C259a72e81d7e5224f0EE9dF6fe5B31
-MORPHO_ADDRESS=0xBBf3D2a8dA5A3e1a7b7E8F2a9cF3dB4e5f6g7h8
-MOONWELL_POOL_ADDRESS=0xFeec6D1eE8dD0f8C0a9E9f2F3B4c5D6e7F8g9h0
-SWAP_ROUTER=0xE4eDD6f5f0e0fB8dB7c4e9F2a1D3C5e6F7g8h9i
-```
-
-## Build & Test
-
-```bash
-# Build contracts
+foundryup            # install forge
+forge install        # fetch dependencies (git submodules in lib/)
 forge build
-
-# Run tests
-forge test
+forge test --fork-url https://mainnet.base.org   # 16/16 — real Base state
 ```
 
 ## Deployment
 
-### Flashloan Priority: Morpho (0% fee) > Aave (0.09% fee)
-
-The contract is designed to use **Morpho as the primary flashloan source** (0% fee) by default. Aave V3 is available as fallback.
-
-**Key Functions:**
-- `executeFlashloan()` - Uses preferred source (Morpho by default)
-- `setPreferredSource(0)` - Switch to Morpho (0 fee)
-- `setPreferredSource(1)` - Switch to Aave (0.09% fee)
-- `executeMorphoFlashloan()` - Force use Morpho
-- `executeAaveFlashloan()` - Force use Aave
-
-### 1. Deploy ArbitrageExecutor Contract
-
 ```bash
-# Deploy to Base Sepolia (testnet first!)
-# Constructor args: (morpho, aavePool, supplyPool, borrowPool, swapRouter)
-
-forge create --rpc-url $BASE_SEPOLIA_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY \
-  --constructor-args $MORPHO_ADDRESS $AAVE_POOL_V3_ADDRESS $MOONWELL_POOL_ADDRESS $MOONWELL_POOL_ADDRESS $SWAP_ROUTER \
-  contracts/ArbitrageExecutor.sol:ArbitrageExecutor
+cp .env.example .env   # fill DEPLOYER_PRIVATE_KEY
+source .env
+forge script script/Deploy.s.sol --rpc-url base --broadcast --verify
 ```
 
-### 2. Verify Contract
+## Bot (TypeScript)
+
+Monitors **real** Aave V3 rates, ranks leveraged loop candidates, watches the
+on-chain health factor, and deleverages when it drops below the critical
+threshold. Defaults to dry-run — it never sends a transaction unless you
+opt in.
 
 ```bash
-forge verify-contract <CONTRACT_ADDRESS> --rpc-url $BASE_RPC_URL
-```
-
-### 3. Switch Flashloan Source (Optional)
-
-```bash
-# Switch to Aave if Morpho liquidity is insufficient
-cast send <CONTRACT_ADDRESS> "setPreferredSource(uint8)" 1 --rpc-url $BASE_RPC_URL --private-key $DEPLOYER_PRIVATE_KEY
-```
-
-## Contract Addresses (Base Mainnet)
-
-| Protocol | Address | Notes |
-|----------|---------|-------|
-| Morpho | `0x...` | Primary flashloan (0% fee) - VERIFY |
-| Aave V3 Pool | `0xA238Dd80C259a72e81d7e5224f0EE9dF6fe5B31` | Fallback flashloan |
-| Moonwell | `0xFeec6D1eE8dD0f8C0a9E9f2F3B4c5D6e7F8g9h0` | Supply/Borrow - VERIFY |
-| Uniswap V3 Router | `0xE4eDD6f5f0e0fB8dB7c4e9F2a1D3C5e6F7g8h9i` | For swaps - VERIFY |
-
-> ⚠️ **Important**: Verify addresses at [Basescan](https://basescan.org) before deploying!
-
-## Running the Bot
-
-```bash
-# Install Node.js dependencies
 cd bot
 npm install
-
-# Configure bot settings
-cp config.example.json config.json
-# Edit config.json with your contract addresses
-
-# Start the bot
-npm run start
-
-# Or run with PM2 for production
-pm2 start bot/index.js
+npm test              # unit tests (32)
+npm run build
+cp ../.env.example ../.env  # configure, keep DRY_RUN=true to monitor only
+npm start
 ```
 
-## Security
+Every live send is pre-simulated with `simulateContract`; a failing simulation
+never reaches the mempool.
 
-- Use multiple price oracles for price validation
-- Set maximum trade size limits
-- Implement slippage protection
-- Monitor gas costs vs. potential profit
-- Test extensively on testnet before mainnet
-- Use separate wallets for deployment and execution
+### Configuration
 
-## License
+| Variable | Default | Meaning |
+|---|---|---|
+| `EXECUTOR_ADDRESS` | — | deployed LoopingExecutor |
+| `EXECUTOR_PRIVATE_KEY` | — | owner key (live mode only) |
+| `BASE_RPC_URL` | `https://mainnet.base.org` | optional HTTP endpoint for read fallback and wallet transactions; without `BASE_WS_URL`, `USE_PENDING_BLOCK` reads/simulations use it |
+| `BASE_WS_URL` | — | optional WebSocket endpoint (Flashblocks-speed reads) |
+| `MARGIN_ASSET` / `MARGIN_AMOUNT` | WETH / 1e18 | margin token + amount |
+| `LEVERAGE` | 2 | allowed: 2, 3, 5 |
+| `DRY_RUN` | true | simulate only |
+| `AUTO_TRADE` | false | open the best loop automatically |
+| `MIN_NET_APY_BPS` | 50 | minimum yearly net yield on margin |
+| `USE_PENDING_BLOCK` | true | simulate/read against the Flashblock preconfirmation block |
 
-MIT
+## Test status
+
+- Fork suite (real Base mainnet state): **16/16 passing**
+- Fuzz suite (pure math): **7/7 passing** — `forge test` without a fork
+- Bot unit tests: **32/32 passing** — `npm test`
+- E2E (anvil fork of Base): full cycle approve → openLoop 2x → closeLoop —
+  margin returned in one tx
+
+## Gas snapshot (Base mainnet fork)
+
+| Function | Gas used |
+|---|---|
+| openLoop 2x (Morpho source) | ~480k |
+| openLoop 2x (Aave source) | ~470k |
+| closeLoop | ~645k |
+
+At 0.01 gwei Base fees both are well under $0.01.
+
+## Risk warnings
+
+- **Interest-rate risk**: borrow APR can exceed supply APY (the loop turns
+  negative). The bot ranks candidates by live rates — check the net APY.
+- **Liquidation**: HF falls when debt grows faster than collateral yield.
+  5x leverage is only possible in e-mode (LT 90%) and is risky: HF 1.125 at open.
+- **Cross-asset loops** add price risk — the swap callback enforces atomic
+  solvency (`minSwapOut`, debt must be coverable at execution price).
+- **Operator mistake**: only the executor owner can open/close; keep the key
+  cold. 3-of-5 multisig setup is strongly recommended (unimplemented yet).
+
+Software status: contracts fork-tested against the real Base state;
+bot unit-tested and smoke-tested on live data. Auditing by a third party is
+still required before deploying real funds.

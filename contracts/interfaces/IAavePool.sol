@@ -45,5 +45,9 @@ interface IAavePool {
  * @notice Interface for Aave Pool Addresses Provider
  */
 interface IAavePoolAddressesProvider {
+    /**
+     * @notice Get the address of the Aave Pool contract
+     * @return The address of the Pool
+     */
     function getPool() external view returns (address);
 }

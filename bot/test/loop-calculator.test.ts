@@ -1,0 +1,65 @@
+import { describe, it, expect } from 'vitest';
+import {
+  flashloanAmountFor,
+  totalCollateralFor,
+  netApyBps,
+  projectedHealthFactor,
+  maxLeverageForLtv,
+  leverageAllowed,
+  liquidationBuffer,
+} from '../src/strategy/loop-calculator';
+
+describe('loop-calculator', () => {
+  it('computes flashloan size from margin and leverage', () => {
+    expect(flashloanAmountFor(1_000n, 2)).toBe(1_000n);
+    expect(flashloanAmountFor(1_000n, 3)).toBe(2_000n);
+    expect(flashloanAmountFor(1_000n, 5)).toBe(4_000n);
+  });
+
+  it('computes total collateral', () => {
+    expect(totalCollateralFor(1_000n, 5)).toBe(5_000n);
+  });
+
+  it('computes net leveraged APY in bps', () => {
+    // 2x on 3% supply vs 2% borrow: 2*300 - 1*200 = 400 bps
+    expect(netApyBps(300, 200, 2)).toBe(400);
+    // 3x: 3*300 - 2*200 = 500 bps on margin
+    expect(netApyBps(300, 200, 3)).toBe(500);
+    // negative when borrow cost exceeds yield
+    expect(netApyBps(100, 200, 2)).toBe(0);
+    expect(netApyBps(100, 300, 3)).toBeLessThan(0);
+  });
+
+  it('computes projected health factor after open', () => {
+    // WETH LT 82.5%: HF = L*0.825/(L-1)
+    expect(projectedHealthFactor(2, 8250)).toBeCloseTo(1.65, 5);
+    expect(projectedHealthFactor(3, 8250)).toBeCloseTo(1.2375, 5);
+    expect(projectedHealthFactor(5, 8250)).toBeCloseTo(1.03125, 5);
+    // always above 1 while LT > (L-1)/L
+  });
+
+  it('computes max leverage from LTV with safety margin', () => {
+    // LTV 80%: floor(1 / (1 - (0.80 - 0.02))) = floor(1/0.22) = 4
+    expect(maxLeverageForLtv(8000, 200)).toBe(4);
+    // LTV 50%: floor(1 / 0.52) = 1 -> no leverage
+    expect(maxLeverageForLtv(5000, 200)).toBe(1);
+    expect(maxLeverageForLtv(0)).toBe(1);
+  });
+
+  it('allows leverage only when HF floor and LTV permit', () => {
+    // 2x on WETH normal mode: HF 1.65, LTV ok
+    expect(leverageAllowed(2, 8250, 8000, 1.05)).toBe(true);
+    // 5x on WETH normal mode: HF 1.03 < 1.05
+    expect(leverageAllowed(5, 8250, 8000, 1.05)).toBe(false);
+    // 5x in e-mode LT 90%, LTV 87%: HF = 5*0.9/4 = 1.125, max lev = 8
+    expect(leverageAllowed(5, 9000, 8700, 1.05)).toBe(true);
+    // leverage above LTV-implied max never allowed
+    expect(leverageAllowed(9, 9000, 8700, 1.05)).toBe(false);
+  });
+
+  it('computes liquidation buffer', () => {
+    const buffer = liquidationBuffer(2, 8250);
+    // 1 - (1 / (2 * 0.825)) = 1 - 0.606 = 0.394 adverse move tolerated
+    expect(buffer).toBeCloseTo(0.394, 3);
+  });
+});

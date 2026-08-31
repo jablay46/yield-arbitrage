@@ -1,216 +1,174 @@
-import {
-  PublicClient,
-  WalletClient,
-  Account,
-  Address,
-  Hex,
-  encodeFunctionData,
-  parseUnits,
-} from 'viem';
-import { ArbitrageExecutor__factory } from '../typechain-types';
-import { ValidatedOpportunity } from './opportunity-filter';
+import { Account, Address, Hex } from 'viem';
+import { base } from 'viem/chains';
+import { BasePublicClient, BaseWalletClient } from '../client-types';
+import { loopingExecutorAbi } from '../abis';
+import { GasStrategy } from '../utils/gas-strategy';
+import { Logger } from '../utils/logger';
 
-/**
- * Transaction builder configuration
- */
-export interface TxBuilderConfig {
-  // Contract addresses
-  arbitrageExecutorAddress: Address;
-  
-  // Gas settings
-  maxFeePerGasGwei: number;
-  maxPriorityFeePerGasGwei: number;
-  gasLimitBuffer: number; // percentage
-  
-  // Execution settings
-  nonce?: number;
-  ttl?: number; // time to live in seconds
+export interface OpenLoopRequest {
+  collateralAsset: Address;
+  borrowAsset: Address;
+  marginAmount: bigint;
+  leverage: 2 | 3 | 5;
+  minHealthFactor: bigint;
+  swapData: Hex;
+  minSwapOut: bigint;
+}
+
+export interface CloseLoopRequest {
+  collateralAsset: Address;
+  borrowAsset: Address;
+  swapData: Hex;
+  minSwapOut: bigint;
+}
+
+export interface SentTx {
+  hash: Hex;
+  gasUsed?: bigint;
 }
 
 /**
- * Built transaction ready for signing
- */
-export interface BuiltTransaction {
-  to: Address;
-  data: Hex;
-  value: bigint;
-  gasLimit: bigint;
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
-  nonce: number;
-  chainId: number;
-}
-
-/**
- * Transaction builder
- * Builds transactions for arbitrage execution
+ * Builds, simulates and sends LoopingExecutor transactions.
+ * Every send is simulated first; a failed simulation never hits the mempool.
  */
 export class TransactionBuilder {
-  private client: PublicClient;
-  private wallet: WalletClient;
+  private publicClient: BasePublicClient;
+  private walletClient: BaseWalletClient;
   private account: Account;
-  private config: TxBuilderConfig;
-  
+  private executor: Address;
+  private gas: GasStrategy;
+  private logger: Logger;
+  private usePendingBlock: boolean;
+
   constructor(
-    client: PublicClient,
-    wallet: WalletClient,
+    publicClient: BasePublicClient,
+    walletClient: BaseWalletClient,
     account: Account,
-    config: Partial<TxBuilderConfig>
+    executor: Address,
+    gas: GasStrategy,
+    logger: Logger,
+    usePendingBlock = true
   ) {
-    this.client = client;
-    this.wallet = wallet;
+    this.publicClient = publicClient;
+    this.walletClient = walletClient;
     this.account = account;
-    
-    this.config = {
-      arbitrageExecutorAddress: config.arbitrageExecutorAddress ?? '0x',
-      maxFeePerGasGwei: config.maxFeePerGasGwei ?? 50,
-      maxPriorityFeePerGasGwei: config.maxPriorityFeePerGasGwei ?? 2,
-      gasLimitBuffer: config.gasLimitBuffer ?? 20,
-      nonce: config.nonce ?? 0,
-      ttl: config.ttl ?? 300, // 5 minutes
-    };
+    this.executor = executor;
+    this.gas = gas;
+    this.logger = logger;
+    this.usePendingBlock = usePendingBlock;
   }
-  
-  /**
-   * Build arbitrage execution transaction
-   */
-  async buildArbitrageTx(
-    opportunity: ValidatedOpportunity
-  ): Promise<BuiltTransaction> {
-    // Get gas price
-    const feeData = await this.client.getFeeHistory({
-      blockCount: 5,
-      rewardPercentiles: [50],
-    });
-    
-    // Calculate max fee per gas
-    const baseFee = feeData.baseFeePerGas[feeData.baseFeePerGas.length - 1];
-    const priorityFee = parseUnits(
-      BigInt(this.config.maxPriorityFeePerGasGwei).toString(),
-      'gwei'
+
+  async openLoop(req: OpenLoopRequest): Promise<SentTx> {
+    this.logger.info(
+      `Opening loop: ${req.leverage}x on ${req.collateralAsset}, margin ${req.marginAmount}`
     );
-    
-    const maxPriorityFeePerGas = priorityFee;
-    const maxFeePerGas = baseFee + priorityFee;
-    
-    // Cap at max
-    const maxFeeCap = parseUnits(
-      BigInt(this.config.maxFeePerGasGwei).toString(),
-      'gwei'
-    );
-    
-    const finalMaxFeePerGas = maxFeePerGas > maxFeeCap ? maxFeeCap : maxFeePerGas;
-    
-    // Estimate gas
-    const gasEstimate = await this.estimateGas(opportunity);
-    const gasLimit = this.applyGasBuffer(gasEstimate);
-    
-    // Get nonce
-    const nonce = await this.client.getTransactionCount({
-      address: this.account.address,
-    });
-    
-    // Get chain ID
-    const chainId = (await this.client.getChainId()) as number;
-    
-    // Encode function data
-    const data = this.encodeArbitrageData(opportunity);
-    
-    return {
-      to: this.config.arbitrageExecutorAddress,
-      data,
-      value: 0n,
-      gasLimit,
-      maxFeePerGas: finalMaxFeePerGas,
-      maxPriorityFeePerGas,
-      nonce,
-      chainId,
-    };
-  }
-  
-  /**
-   * Encode arbitrage execution data
-   */
-  private encodeArbitrageData(opportunity: ValidatedOpportunity): Hex {
-    // Create the params for the arbitrage
-    const params = {
-      supplyToken: opportunity.supplyToken as Address,
-      borrowToken: opportunity.borrowToken as Address,
-      supplyAmount: opportunity.flashloanAmount,
-      borrowAmount: opportunity.flashloanAmount,
-      flashloanAmount: opportunity.flashloanAmount,
-      minProfit: BigInt(Math.floor(opportunity.netProfitUsd * 1e18)),
-      path: [opportunity.supplyToken, opportunity.borrowToken, opportunity.supplyToken] as Address[],
-    };
-    
-    // Using ArbitrageExecutor.executeArbitrage(bytes)
-    return encodeFunctionData({
-      abi: [
+
+    const call = {
+      account: this.account,
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'openLoop',
+      args: [
         {
-          name: 'executeArbitrage',
-          type: 'function',
-          inputs: [{ name: 'params', type: 'bytes' }],
-          outputs: [],
-          stateMutability: 'nonpayable',
+          collateralAsset: req.collateralAsset,
+          borrowAsset: req.borrowAsset,
+          marginAmount: req.marginAmount,
+          leverage: req.leverage,
+          minHealthFactor: req.minHealthFactor,
+          swapData: req.swapData,
+          minSwapOut: req.minSwapOut,
         },
       ],
-      functionName: 'executeArbitrage',
-      args: [params as any],
-    });
+    } as const;
+
+    return this.simulateAndSend(call);
   }
-  
-  /**
-   * Estimate gas for transaction
-   */
-  private async estimateGas(opportunity: ValidatedOpportunity): Promise<bigint> {
-    // In production, use callStatic to estimate
-    // For now, use configured estimate
-    return 500000n;
-  }
-  
-  /**
-   * Apply gas buffer to estimate
-   */
-  private applyGasBuffer(gasEstimate: bigint): bigint {
-    const buffer = gasEstimate * BigInt(this.config.gasLimitBuffer) / 100n;
-    return gasEstimate + buffer;
-  }
-  
-  /**
-   * Sign and send transaction
-   */
-  async sendTransaction(tx: BuiltTransaction): Promise<Hex> {
-    const hash = await this.wallet.sendTransaction({
+
+  async closeLoop(req: CloseLoopRequest): Promise<SentTx> {
+    this.logger.info(`Closing loop on ${req.collateralAsset}`);
+
+    const call = {
       account: this.account,
-      to: tx.to,
-      data: tx.data,
-      value: tx.value,
-      gas: tx.gasLimit,
-      maxFeePerGas: tx.maxFeePerGas,
-      maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
-      nonce: tx.nonce,
-      chain: this.client.chain,
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'closeLoop',
+      args: [
+        {
+          collateralAsset: req.collateralAsset,
+          borrowAsset: req.borrowAsset,
+          swapData: req.swapData,
+          minSwapOut: req.minSwapOut,
+        },
+      ],
+    } as const;
+
+    return this.simulateAndSend(call);
+  }
+
+  async approveMargin(token: Address, amount: bigint): Promise<SentTx> {
+    this.logger.info(`Approving ${amount} of ${token} to executor`);
+    const fees = await this.gas.getFees();
+    const hash = await this.walletClient.writeContract({
+      account: this.account,
+      chain: base,
+      address: token,
+      abi: [
+        {
+          name: 'approve',
+          type: 'function',
+          stateMutability: 'nonpayable',
+          inputs: [
+            { name: 'spender', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+          ],
+          outputs: [{ type: 'bool' }],
+        },
+      ],
+      functionName: 'approve',
+      args: [this.executor, amount],
+      ...fees,
     });
-    
-    return hash;
+    return this.waitAndCheck(hash);
   }
-  
+
   /**
-   * Wait for transaction receipt
+   * Simulate first — a revert here means the tx would fail on-chain,
+   * so it never reaches the mempool.
+   *
+   * The `as never` casts sidestep viem's per-functionName arg inference for
+   * the union of openLoop/closeLoop; the `as const` call objects are exact.
    */
-  async waitForTransactionReceipt(hash: Hex): Promise<any> {
-    return this.client.waitForTransactionReceipt({ hash });
+  private async simulateAndSend(call: {
+    account: Account;
+    address: Address;
+    abi: typeof loopingExecutorAbi;
+    functionName: 'openLoop' | 'closeLoop';
+    args: readonly unknown[];
+  }): Promise<SentTx> {
+    // Simulate against the "pending" block — on Base that resolves to the
+    // latest Flashblock (~200ms), so we validate against the freshest state
+    await this.publicClient.simulateContract({
+      ...(call as object),
+      blockTag: this.usePendingBlock ? 'pending' : undefined,
+    } as never);
+
+    const fees = await this.gas.getFees();
+    const hash = await this.walletClient.writeContract({
+      ...(call as object),
+      chain: base,
+      ...fees,
+    } as never);
+
+    this.logger.info(`Tx sent: ${hash}`);
+    return this.waitAndCheck(hash);
   }
-  
-  /**
-   * Update configuration
-   */
-  updateConfig(config: Partial<TxBuilderConfig>): void {
-    this.config = {
-      ...this.config,
-      ...config,
-    };
+
+  private async waitAndCheck(hash: Hex): Promise<SentTx> {
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== 'success') {
+      throw new Error(`Transaction reverted on-chain: ${hash}`);
+    }
+    this.logger.info(`Tx confirmed in block ${receipt.blockNumber}`);
+    return { hash, gasUsed: receipt.gasUsed };
   }
 }
-
-export default TransactionBuilder;

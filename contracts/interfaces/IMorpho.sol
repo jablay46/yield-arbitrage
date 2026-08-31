@@ -3,72 +3,35 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IMorpho
- * @notice Interface for Morpho Blue / Standard
+ * @notice Minimal interface for the Morpho Blue singleton.
+ *         Morpho Blue flashloans charge no fee. Repayment is pulled by Morpho
+ *         via transferFrom after the onMorphoFlashLoan callback returns, so the
+ *         borrower must approve the Morpho contract for the full flashloaned
+ *         amount before the callback ends.
  */
 interface IMorpho {
     /**
      * @notice Executes a flashloan
      * @param token The token to flashloan
-     * @param amount The amount to flashloan
-     * @param data Additional data for the operation
+     * @param assets The amount to flashloan
+     * @param data Arbitrary data forwarded to the callback
      */
     function flashLoan(
         address token,
-        uint256 amount,
+        uint256 assets,
         bytes calldata data
     ) external;
-
-    /**
-     * @notice Supplys liquidity to a market
-     * @param market The market address
-     * @param amount The amount to supply
-     */
-    function supply(
-        address market,
-        uint256 amount
-    ) external;
-
-    /**
-     * @notice Borrows from a market
-     * @param market The market address
-     * @param amount The amount to borrow
-     */
-    function borrow(
-        address market,
-        uint256 amount
-    ) external;
-
-    /**
-     * @notice Repays a borrow
-     * @param market The market address
-     * @param amount The amount to repay
-     */
-    function repay(
-        address market,
-        uint256 amount
-    ) external;
-
-    /**
-     * @notice Withdraws from a market
-     * @param market The market address
-     * @param amount The amount to withdraw
-     */
-    function withdraw(
-        address market,
-        uint256 amount,
-        address receiver
-    ) external returns (uint256);
 }
 
 /**
- * @title IMorphoCallback
- * @notice Interface for Morpho flashloan callback
+ * @title IMorphoFlashLoanCallback
+ * @notice Callback invoked by Morpho Blue on the flashloan initiator.
  */
-interface IMorphoCallback {
-    function onMorphoFlashLoan(
-        address token,
-        uint256 amount,
-        uint256 fee,
-        bytes calldata data
-    ) external;
+interface IMorphoFlashLoanCallback {
+    /**
+     * @notice Callback invoked by Morpho Blue during a flashloan
+     * @param assets The amount of assets flashloaned
+     * @param data Arbitrary data forwarded from the flashLoan call
+     */
+    function onMorphoFlashLoan(uint256 assets, bytes calldata data) external;
 }
