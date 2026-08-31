@@ -1,6 +1,6 @@
 import { Address } from 'viem';
 import { LEVERAGE_LEVELS } from '../config/constants';
-import { MarketRate } from '../monitor/rate-monitor';
+import { EModeCategoryData, MarketRate } from '../monitor/rate-monitor';
 import {
   flashloanAmountFor,
   leverageAllowed,
@@ -31,7 +31,8 @@ export function findLoopCandidates(
   rates: MarketRate[],
   marginAmount: bigint,
   minHealthFactor: number,
-  minNetApyBps: number
+  minNetApyBps: number,
+  eModeCategory: EModeCategoryData
 ): LoopCandidate[] {
   const candidates: LoopCandidate[] = [];
 
@@ -50,20 +51,25 @@ export function findLoopCandidates(
         minHealthFactor
       );
 
-      // e-mode (ETH correlated, LT ~90%) can rescue higher leverage on ETH assets
+      // ETH-correlated e-mode can rescue higher leverage on ETH assets.
       const isEthCorrelated = ['WETH', 'cbETH', 'wstETH', 'weETH'].includes(
         rate.symbol
       );
-      const emodeLtBps = 9000;
-      const emodeLtvBps = 8700;
       const allowedEmode =
         isEthCorrelated &&
-        leverageAllowed(leverage, emodeLtBps, emodeLtvBps, minHealthFactor);
+        leverageAllowed(
+          leverage,
+          eModeCategory.liquidationThresholdBps,
+          eModeCategory.ltvBps,
+          minHealthFactor
+        );
 
       if (!allowedNormal && !allowedEmode) continue;
 
       const needsEmode = !allowedNormal;
-      const ltBps = needsEmode ? emodeLtBps : rate.liquidationThresholdBps;
+      const ltBps = needsEmode
+        ? eModeCategory.liquidationThresholdBps
+        : rate.liquidationThresholdBps;
 
       candidates.push({
         asset: rate.asset,

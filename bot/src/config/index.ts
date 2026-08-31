@@ -82,9 +82,32 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConf
     dryRun: boolFromEnv(env.DRY_RUN, true),
     autoTrade: boolFromEnv(env.AUTO_TRADE, false),
     minNetApyBps: env.MIN_NET_APY_BPS ? Number(env.MIN_NET_APY_BPS) : undefined,
+    minHealthFactorWad: env.MIN_HEALTH_FACTOR_WAD
+      ? BigInt(env.MIN_HEALTH_FACTOR_WAD)
+      : undefined,
+    healthFactorWarnWad: env.HEALTH_FACTOR_WARN_WAD
+      ? BigInt(env.HEALTH_FACTOR_WARN_WAD)
+      : undefined,
+    healthFactorCriticalWad: env.HEALTH_FACTOR_CRITICAL_WAD
+      ? BigInt(env.HEALTH_FACTOR_CRITICAL_WAD)
+      : undefined,
     pollIntervalMs: env.POLL_INTERVAL_MS ? Number(env.POLL_INTERVAL_MS) : undefined,
+    healthCheckIntervalMs: env.HEALTH_CHECK_INTERVAL_MS
+      ? Number(env.HEALTH_CHECK_INTERVAL_MS)
+      : undefined,
+    cooldownMs: env.COOLDOWN_MS ? Number(env.COOLDOWN_MS) : undefined,
     usePendingBlock: env.USE_PENDING_BLOCK
       ? boolFromEnv(env.USE_PENDING_BLOCK, true)
+      : undefined,
+    maxMarginUsd: env.MAX_MARGIN_USD ? Number(env.MAX_MARGIN_USD) : undefined,
+    maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI
+      ? Number(env.MAX_GAS_PRICE_GWEI)
+      : undefined,
+    priorityFeeGwei: env.PRIORITY_FEE_GWEI
+      ? Number(env.PRIORITY_FEE_GWEI)
+      : undefined,
+    gasBufferPercent: env.GAS_BUFFER_PERCENT
+      ? Number(env.GAS_BUFFER_PERCENT)
       : undefined,
     pnlPath: env.PNL_PATH,
     logLevel: env.LOG_LEVEL,

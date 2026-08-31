@@ -41,6 +41,8 @@ export class LoopingBot {
   private openPosition?: OpenPositionInfo;
 
   private running = false;
+  private monitorCycleInFlight = false;
+  private healthCycleInFlight = false;
   private timers: NodeJS.Timeout[] = [];
 
   constructor(config: BotConfig) {
@@ -147,14 +149,19 @@ export class LoopingBot {
 
   /** Fetch live rates and rank loop candidates. */
   private async monitorCycle(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running || this.monitorCycleInFlight) return;
+    this.monitorCycleInFlight = true;
     try {
-      const rates = await this.rateMonitor.getAllRates();
+      const [rates, eModeCategory] = await Promise.all([
+        this.rateMonitor.getAllRates(),
+        this.rateMonitor.getEModeCategoryData(),
+      ]);
       const candidates = findLoopCandidates(
         rates,
         this.config.marginAmount,
         Number(this.config.minHealthFactorWad) / 1e18,
-        this.config.minNetApyBps
+        this.config.minNetApyBps,
+        eModeCategory
       );
 
       this.logTopCandidates(candidates);
@@ -164,6 +171,8 @@ export class LoopingBot {
       }
     } catch (error) {
       this.logger.error(`Monitor cycle failed: ${error}`);
+    } finally {
+      this.monitorCycleInFlight = false;
     }
   }
 
@@ -240,7 +249,9 @@ export class LoopingBot {
 
   /** Health factor watchdog — deleverages when critical. */
   private async healthCycle(): Promise<void> {
-    if (!this.running || !this.healthMonitor) return;
+    if (!this.running || !this.healthMonitor || this.healthCycleInFlight)
+      return;
+    this.healthCycleInFlight = true;
     try {
       const open = await this.healthMonitor.hasOpenPosition();
       if (!open) return;
@@ -287,6 +298,8 @@ export class LoopingBot {
       }
     } catch (error) {
       this.logger.error(`Health cycle failed: ${error}`);
+    } finally {
+      this.healthCycleInFlight = false;
     }
   }
 
@@ -335,4 +348,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-

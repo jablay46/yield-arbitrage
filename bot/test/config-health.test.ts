@@ -51,6 +51,38 @@ describe('config schema', () => {
     expect(cfg.dryRun).toBe(false);
     expect(cfg.marginAmount).toBe(1_000_000_000_000_000_000n);
   });
+
+  it('maps operator overrides for strategy, safety, loops, limits, and gas', () => {
+    const cfg = loadConfigFromEnv({
+      MARGIN_ASSET: base.marginAsset,
+      MARGIN_AMOUNT: base.marginAmount.toString(),
+      MIN_NET_APY_BPS: '125',
+      MIN_HEALTH_FACTOR_WAD: '1060000000000000000',
+      HEALTH_FACTOR_WARN_WAD: '1250000000000000000',
+      HEALTH_FACTOR_CRITICAL_WAD: '1150000000000000000',
+      POLL_INTERVAL_MS: '11000',
+      HEALTH_CHECK_INTERVAL_MS: '22000',
+      COOLDOWN_MS: '33000',
+      MAX_MARGIN_USD: '44000',
+      MAX_GAS_PRICE_GWEI: '45',
+      PRIORITY_FEE_GWEI: '0.2',
+      GAS_BUFFER_PERCENT: '25',
+    });
+
+    expect(cfg).toMatchObject({
+      minNetApyBps: 125,
+      minHealthFactorWad: 1_060_000_000_000_000_000n,
+      healthFactorWarnWad: 1_250_000_000_000_000_000n,
+      healthFactorCriticalWad: 1_150_000_000_000_000_000n,
+      pollIntervalMs: 11_000,
+      healthCheckIntervalMs: 22_000,
+      cooldownMs: 33_000,
+      maxMarginUsd: 44_000,
+      maxGasPriceGwei: 45,
+      priorityFeeGwei: 0.2,
+      gasBufferPercent: 25,
+    });
+  });
 });
 
 describe('HealthMonitor.classify', () => {

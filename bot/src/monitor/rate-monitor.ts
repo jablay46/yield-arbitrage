@@ -3,6 +3,7 @@ import { BasePublicClient } from '../client-types';
 import { aavePoolAbi, dataProviderAbi, erc20Abi } from '../abis';
 import {
   ADDRESSES,
+  EMODE,
   TOKENS,
   TOKEN_DECIMALS,
   SECONDS_PER_YEAR,
@@ -28,6 +29,11 @@ export interface MarketRate {
   lastUpdated: number;
 }
 
+export interface EModeCategoryData {
+  ltvBps: number;
+  liquidationThresholdBps: number;
+}
+
 const RAY_NUMBER = 1e27;
 
 /** Aave rates are ray-scaled per-second APR; convert to APY bps. */
@@ -49,10 +55,43 @@ export function rayRateToAprBps(rateRay: bigint): number {
 export class RateMonitor {
   private client: BasePublicClient;
   private watchlist: Address[];
+  private eModeCategory?: Promise<EModeCategoryData>;
 
   constructor(client: BasePublicClient, watchlist?: Address[]) {
     this.client = client;
     this.watchlist = watchlist ?? (Object.values(TOKENS) as Address[]);
+  }
+
+  /** Fetch and cache the ETH-correlated e-mode limits for this bot run. */
+  async getEModeCategoryData(): Promise<EModeCategoryData> {
+    if (!this.eModeCategory) {
+      this.eModeCategory = this.client
+        .readContract({
+          address: ADDRESSES.aavePool as Address,
+          abi: aavePoolAbi,
+          functionName: 'getEModeCategoryData',
+          args: [EMODE.ETH_CORRELATED],
+        })
+        .then((category) => {
+          const data = {
+            ltvBps: Number(category.ltv),
+            liquidationThresholdBps: Number(category.liquidationThreshold),
+          };
+          if (
+            data.ltvBps <= 0 ||
+            data.liquidationThresholdBps < data.ltvBps ||
+            data.liquidationThresholdBps > 10_000
+          ) {
+            throw new Error('invalid ETH-correlated e-mode category data');
+          }
+          return data;
+        })
+        .catch((error) => {
+          this.eModeCategory = undefined;
+          throw error;
+        });
+    }
+    return this.eModeCategory;
   }
 
   async getAllRates(): Promise<MarketRate[]> {

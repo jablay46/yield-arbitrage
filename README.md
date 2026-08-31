@@ -69,7 +69,7 @@ never reaches the mempool.
 |---|---|---|
 | `EXECUTOR_ADDRESS` | — | deployed LoopingExecutor |
 | `EXECUTOR_PRIVATE_KEY` | — | owner key (live mode only) |
-| `BASE_RPC_URL` | `https://mainnet.base.org` | HTTP endpoint for RPC fallback and transactions (wallet writes always use HTTP) |
+| `BASE_RPC_URL` | `https://mainnet.base.org` | optional HTTP endpoint for read fallback and wallet transactions; without `BASE_WS_URL`, `USE_PENDING_BLOCK` reads/simulations use it |
 | `BASE_WS_URL` | — | optional WebSocket endpoint (Flashblocks-speed reads) |
 | `MARGIN_ASSET` / `MARGIN_AMOUNT` | WETH / 1e18 | margin token + amount |
 | `LEVERAGE` | 2 | allowed: 2, 3, 5 |

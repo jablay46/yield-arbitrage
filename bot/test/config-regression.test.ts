@@ -4,6 +4,10 @@ import { findLoopCandidates } from '../src/strategy/find-candidates';
 import { MarketRate } from '../src/monitor/rate-monitor';
 
 const MARGIN_ASSET = '0x4200000000000000000000000000000000000006';
+const E_MODE_CATEGORY = {
+  ltvBps: 8700,
+  liquidationThresholdBps: 9000,
+};
 
 describe('MIN_NET_APY_BPS (review regression)', () => {
   const rates: MarketRate[] = [
@@ -46,8 +50,20 @@ describe('MIN_NET_APY_BPS (review regression)', () => {
       MIN_NET_APY_BPS: '1000',
     });
 
-    const strictOut = findLoopCandidates(rates, 1000n, 1.05, strict.minNetApyBps);
-    const lenientOut = findLoopCandidates(rates, 1000n, 1.05, lenient.minNetApyBps);
+    const strictOut = findLoopCandidates(
+      rates,
+      1000n,
+      1.05,
+      strict.minNetApyBps,
+      E_MODE_CATEGORY
+    );
+    const lenientOut = findLoopCandidates(
+      rates,
+      1000n,
+      1.05,
+      lenient.minNetApyBps,
+      E_MODE_CATEGORY
+    );
     expect(strictOut).toHaveLength(0);
     expect(lenientOut.length).toBeGreaterThan(0);
   });
