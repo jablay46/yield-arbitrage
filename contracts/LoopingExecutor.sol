@@ -38,12 +38,13 @@ contract LoopingExecutor is FlashloanBase {
     error ZeroMargin();
     error PositionAlreadyOpen();
     error NoOpenPosition();
+    error PositionMismatch();
     error HealthFactorTooLow(uint256 healthFactor, uint256 minimum);
     error InsufficientToRepay(uint256 balance, uint256 required);
     error RouterNotSet();
     error SlippageExceeded(uint256 amountOut, uint256 minOut);
     error MissingSwapData();
-    error RepayMismatch(uint256 repaid, uint256 expected);
+    error RepayMismatch(uint256 remaining);
     error ConversionOverflow();
 
     enum Mode {
@@ -68,11 +69,21 @@ contract LoopingExecutor is FlashloanBase {
         uint256 minSwapOut; // slippage guard for the close swap (borrow units)
     }
 
+    /// @dev Records the assets of the currently open loop so closeLoop can
+    ///      validate its parameters against the position that was actually
+    ///      opened, rather than trusting the caller to repeat them.
+    struct OpenPosition {
+        address collateralAsset;
+        address borrowAsset;
+        uint8 leverage;
+    }
+
     ILendingPool public lendingPool;
     IAaveOracle public oracle;
     address public swapRouter;
     uint256 public minHealthFactor = 1.05e18;
     bool public positionOpen;
+    OpenPosition public openPosition;
 
     event LoopOpened(
         address indexed collateralAsset,
@@ -132,17 +143,33 @@ contract LoopingExecutor is FlashloanBase {
         uint256 flashAmount = _borrowAmount(p);
 
         positionOpen = true;
+        openPosition = OpenPosition({
+            collateralAsset: p.collateralAsset,
+            borrowAsset: p.borrowAsset,
+            leverage: p.leverage
+        });
         _initiateFlashloan(p.borrowAsset, flashAmount, abi.encode(Mode.Open, p));
     }
 
     /**
      * @notice Close the loop and sweep all remaining funds to the owner.
-     * @dev The flashloan is sized from the live on-chain debt balance.
+     * @dev The flashloan is sized from the live on-chain debt balance. The
+     *      close parameters must match the position recorded at open time so
+     *      the unwind cannot target a different asset pair.
      */
     function closeLoop(
         CloseParams calldata p
     ) external onlyOwner nonReentrant whenNotPaused {
         if (!positionOpen) revert NoOpenPosition();
+
+        OpenPosition memory stored = openPosition;
+        if (
+            p.collateralAsset != stored.collateralAsset ||
+            p.borrowAsset != stored.borrowAsset
+        ) revert PositionMismatch();
+        if (p.collateralAsset != p.borrowAsset && p.swapData.length == 0) {
+            revert MissingSwapData();
+        }
 
         ReserveData memory rd = lendingPool.getReserveData(p.borrowAsset);
         uint256 debt = IERC20(rd.variableDebtTokenAddress).balanceOf(
@@ -269,19 +296,24 @@ contract LoopingExecutor is FlashloanBase {
         uint256 premium,
         CloseParams memory p
     ) internal {
-        // 1. Repay the full debt
+        // 1. Repay the full current debt. Approve the flashloaned amount and
+        //    pass the max-uint sentinel so repayment covers whatever variable
+        //    debt is currently outstanding (accrual since the snapshot is fine).
         ReserveData memory rd = lendingPool.getReserveData(p.borrowAsset);
         uint256 debt = IERC20(rd.variableDebtTokenAddress).balanceOf(
             address(this)
         );
-        IERC20(p.borrowAsset).forceApprove(address(lendingPool), debt);
-        uint256 repaid = lendingPool.repay(
+        IERC20(p.borrowAsset).forceApprove(address(lendingPool), flashAmount);
+        lendingPool.repay(
             p.borrowAsset,
-            debt,
+            type(uint256).max,
             VARIABLE_RATE_MODE,
             address(this)
         );
-        if (repaid != debt) revert RepayMismatch(repaid, debt);
+        uint256 remaining = IERC20(rd.variableDebtTokenAddress).balanceOf(
+            address(this)
+        );
+        if (remaining != 0) revert RepayMismatch(remaining);
 
         // 2. Withdraw all collateral
         uint256 withdrawn = lendingPool.withdraw(
@@ -305,6 +337,9 @@ contract LoopingExecutor is FlashloanBase {
         uint256 required = flashAmount + premium;
         uint256 balance = IERC20(flashAsset).balanceOf(address(this));
         if (balance < required) revert InsufficientToRepay(balance, required);
+
+        // 5. Clear the recorded position now that the unwind succeeded.
+        delete openPosition;
 
         emit LoopClosed(p.collateralAsset, p.borrowAsset, debt, withdrawn);
     }
@@ -334,6 +369,8 @@ contract LoopingExecutor is FlashloanBase {
         }
 
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
+        // Reset the router allowance so no residual approval lingers between swaps.
+        IERC20(tokenIn).forceApprove(swapRouter, 0);
         if (amountOut < minOut) revert SlippageExceeded(amountOut, minOut);
     }
 

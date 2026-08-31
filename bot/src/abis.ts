@@ -20,6 +20,7 @@ export const erc20Abi = parseAbi([
   'function approve(address spender, uint256 amount) returns (bool)',
   'function decimals() view returns (uint8)',
   'function symbol() view returns (string)',
+  'function totalSupply() view returns (uint256)',
 ]);
 
 /** LoopingExecutor — see contracts/LoopingExecutor.sol */

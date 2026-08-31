@@ -131,8 +131,12 @@ contract LoopingExecutorForkTest is Test {
     }
 
     function test_openLoop_5x_reverts_in_normal_mode() public {
-        // WETH normal-mode LTV 80% => 5x needs 4x debt, at the borrowable edge
-        vm.expectRevert();
+        // WETH normal-mode LT 82.5%, LTV 80% => 5x needs 4x debt which sits at
+        // the borrowable edge, so Aave rejects the borrow with
+        // CollateralCannotCoverNewBorrow before the HF floor is reached. Assert
+        // the specific selector rather than a bare expectRevert so the test
+        // cannot pass on an unrelated revert.
+        vm.expectRevert(bytes4(keccak256("CollateralCannotCoverNewBorrow()")));
         executor.openLoop(_params(5, 1 ether, 0));
     }
 
@@ -228,6 +232,21 @@ contract LoopingExecutorForkTest is Test {
             LoopingExecutor.CloseParams({
                 collateralAsset: WETH,
                 borrowAsset: WETH,
+                swapData: "",
+                minSwapOut: 0
+            })
+        );
+    }
+
+    function test_closeLoop_reverts_on_position_mismatch() public {
+        // Open a WETH/WETH loop, then attempt to close with a different asset
+        // pair. The stored open position must prevent unwinding the wrong pair.
+        executor.openLoop(_params(2, 1 ether, 0));
+        vm.expectRevert(LoopingExecutor.PositionMismatch.selector);
+        executor.closeLoop(
+            LoopingExecutor.CloseParams({
+                collateralAsset: WETH,
+                borrowAsset: USDC,
                 swapData: "",
                 minSwapOut: 0
             })

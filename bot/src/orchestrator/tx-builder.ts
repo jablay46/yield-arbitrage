@@ -133,7 +133,11 @@ export class TransactionBuilder {
 
   /**
    * Simulate first — a revert here means the tx would fail on-chain,
-   * so it never reaches the mempool.
+   * so it never reaches the mempool. The simulation's request is forwarded
+   * directly to writeContract (instead of rebuilding the call) so the
+   * encoded args are guaranteed to match what was validated. Gas is sized
+   * via estimateContractGas with the configured buffer rather than reusing
+   * the simulation's gas estimate.
    *
    * The `as never` casts sidestep viem's per-functionName arg inference for
    * the union of openLoop/closeLoop; the `as const` call objects are exact.
@@ -146,17 +150,24 @@ export class TransactionBuilder {
     args: readonly unknown[];
   }): Promise<SentTx> {
     // Simulate against the "pending" block — on Base that resolves to the
-    // latest Flashblock (~200ms), so we validate against the freshest state
-    await this.publicClient.simulateContract({
+    // latest Flashblock (~200ms), so we validate against the freshest state.
+    const { request } = await this.publicClient.simulateContract({
       ...(call as object),
       blockTag: this.usePendingBlock ? 'pending' : undefined,
     } as never);
 
     const fees = await this.gas.getFees();
-    const hash = await this.walletClient.writeContract({
+    const gasEstimate = await this.publicClient.estimateContractGas({
       ...(call as object),
+      account: this.account,
+      blockTag: this.usePendingBlock ? 'pending' : undefined,
+    } as never);
+
+    const hash = await this.walletClient.writeContract({
+      ...request,
       chain: base,
       ...fees,
+      gas: this.gas.applyGasBuffer(gasEstimate),
     } as never);
 
     this.logger.info(`Tx sent: ${hash}`);

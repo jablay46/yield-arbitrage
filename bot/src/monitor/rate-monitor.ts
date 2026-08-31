@@ -124,19 +124,40 @@ export class RateMonitor {
       .filter(({ r }) => r.status === 'success')
       .map(({ r, i, asset }) => {
         liquidityIndex.push(i);
+        const rd = (r as Extract<typeof r, { status: 'success' }>).result;
         return {
           address: asset,
           abi: erc20Abi,
           functionName: 'balanceOf' as const,
-          args: [
-            (r as Extract<typeof r, { status: 'success' }>).result.aTokenAddress,
-          ] as const,
+          args: [rd.aTokenAddress] as const,
         };
       });
 
-    const liquidityResults = liquidityCalls.length
-      ? await this.client.multicall({ contracts: liquidityCalls, allowFailure: true })
-      : [];
+    // totalSupply of the variable debt token gives the total borrowed amount
+    // for utilization. Keyed by the same reserve index as liquidity.
+    const debtSupplyIndex: number[] = [];
+    const debtSupplyCalls = reserveResults
+      .map((r, i) => ({ r, i }))
+      .filter(({ r }) => r.status === 'success')
+      .map(({ r, i }) => {
+        debtSupplyIndex.push(i);
+        const rd = (r as Extract<typeof r, { status: 'success' }>).result;
+        return {
+          address: rd.variableDebtTokenAddress,
+          abi: erc20Abi,
+          functionName: 'totalSupply' as const,
+          args: [] as const,
+        };
+      });
+
+    const [liquidityResults, debtSupplyResults] = await Promise.all([
+      liquidityCalls.length
+        ? this.client.multicall({ contracts: liquidityCalls, allowFailure: true })
+        : Promise.resolve([]),
+      debtSupplyCalls.length
+        ? this.client.multicall({ contracts: debtSupplyCalls, allowFailure: true })
+        : Promise.resolve([]),
+    ]);
 
     const liquidityByReserveIndex = new Map<number, bigint>();
     liquidityIndex.forEach((reserveIdx, pos) => {
@@ -144,6 +165,15 @@ export class RateMonitor {
       liquidityByReserveIndex.set(
         reserveIdx,
         liqResult?.status === 'success' ? (liqResult.result as bigint) : 0n,
+      );
+    });
+
+    const debtByReserveIndex = new Map<number, bigint>();
+    debtSupplyIndex.forEach((reserveIdx, pos) => {
+      const debtResult = debtSupplyResults[pos];
+      debtByReserveIndex.set(
+        reserveIdx,
+        debtResult?.status === 'success' ? (debtResult.result as bigint) : 0n,
       );
     });
 
@@ -157,12 +187,20 @@ export class RateMonitor {
       const cfg = config.result;
 
       const availableLiquidity = liquidityByReserveIndex.get(i) ?? 0n;
+      const totalDebt = debtByReserveIndex.get(i) ?? 0n;
 
       const symbol = this.symbolFor(this.watchlist[i]);
 
       // getReserveConfigurationData positional outputs
       const [, ltv, liquidationThreshold, , , , borrowingEnabled, , isActive, isFrozen] =
         cfg;
+
+      // Utilization = totalDebt / (totalDebt + availableLiquidity).
+      const totalDeployed = totalDebt + availableLiquidity;
+      const utilizationBps =
+        totalDeployed > 0n
+          ? Number((totalDebt * 10_000n) / totalDeployed)
+          : 0;
 
       rates.push({
         asset: this.watchlist[i],
@@ -171,7 +209,7 @@ export class RateMonitor {
         supplyApyBps: rayRateToApyBps(rd.currentLiquidityRate),
         borrowAprBps: rayRateToAprBps(rd.currentVariableBorrowRate),
         availableLiquidity,
-        utilizationBps: 0,
+        utilizationBps,
         ltvBps: Number(ltv),
         liquidationThresholdBps: Number(liquidationThreshold),
         borrowingEnabled,
