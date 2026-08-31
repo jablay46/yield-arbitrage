@@ -36,8 +36,8 @@ export const BotConfigSchema = z.object({
   healthFactorCriticalWad: z.bigint().default(1_100_000_000_000_000_000n), // 1.10
 
       // Loop control
-  pollIntervalMs: z.number().default(15_000),
-  healthCheckIntervalMs: z.number().default(30_000),
+  pollIntervalMs: z.number().default(30_000),
+  healthCheckIntervalMs: z.number().default(60_000),
   cooldownMs: z.number().default(60_000),
 
   /** Base Flashblocks: simulate/read against the ~200ms preconfirmed block */
@@ -45,6 +45,10 @@ export const BotConfigSchema = z.object({
 
   // Limits
   maxMarginUsd: z.number().default(50_000),
+
+  /** TTL for the cached oracle price, in ms. Avoids a fresh getAssetPrice
+   *  RPC every cycle when autoTrade is polling for an open. */
+  priceCacheTtlMs: z.number().default(30_000),
 
   // Gas
   maxGasPriceGwei: z.number().default(50),
@@ -100,6 +104,9 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConf
       ? boolFromEnv(env.USE_PENDING_BLOCK, true)
       : undefined,
     maxMarginUsd: env.MAX_MARGIN_USD ? Number(env.MAX_MARGIN_USD) : undefined,
+    priceCacheTtlMs: env.PRICE_CACHE_TTL_MS
+      ? Number(env.PRICE_CACHE_TTL_MS)
+      : undefined,
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI
       ? Number(env.MAX_GAS_PRICE_GWEI)
       : undefined,

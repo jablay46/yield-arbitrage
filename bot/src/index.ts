@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http, webSocket, Transport, Address } from 'viem';
+import { createPublicClient, createWalletClient, http, webSocket, Transport, Address, Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
@@ -10,6 +10,7 @@ import { HealthMonitor } from './monitor/health-monitor';
 import { findLoopCandidates, LoopCandidate } from './strategy/find-candidates';
 import { RiskEngine } from './position/risk-engine';
 import { PnLTracker } from './position/pnl-tracker';
+import { estimateRealizedPnL } from './position/pnl-estimate';
 import { TransactionBuilder } from './orchestrator/tx-builder';
 import { GasStrategy } from './utils/gas-strategy';
 import { createLogger, Logger } from './utils/logger';
@@ -19,6 +20,16 @@ export interface OpenPositionInfo {
   symbol: string;
   marginAmount: bigint;
   leverage: number;
+  /** USD value of the margin at open time (Aave oracle). */
+  marginUsd: number;
+  /** Gas used by the approve+open transactions, in wei units. */
+  openTxGasUsed: bigint;
+  openTxHash: Hex;
+  /** Epoch ms when the open tx confirmed. */
+  openedAt: number;
+  /** Risk-engine position id, for close bookkeeping. */
+  riskId: string;
+  decimals: number;
 }
 
 /**
@@ -36,6 +47,7 @@ export class LoopingBot {
   private rateMonitor: RateMonitor;
   private riskEngine: RiskEngine;
   private pnlTracker: PnLTracker;
+  private gasStrategy: GasStrategy;
   private healthMonitor?: HealthMonitor;
   private txBuilder?: TransactionBuilder;
   private openPosition?: OpenPositionInfo;
@@ -59,7 +71,11 @@ export class LoopingBot {
       transport: readTransport,
     });
 
-    this.rateMonitor = new RateMonitor(publicClient);
+    this.rateMonitor = new RateMonitor(
+      publicClient,
+      undefined,
+      config.priceCacheTtlMs,
+    );
     this.riskEngine = new RiskEngine({
       maxMarginUsd: config.maxMarginUsd,
       minNetApyBps: config.minNetApyBps,
@@ -77,6 +93,7 @@ export class LoopingBot {
       },
       this.logger
     );
+    this.gasStrategy = gasStrategy;
 
     if (config.executorAddress) {
       this.healthMonitor = new HealthMonitor(
@@ -178,6 +195,18 @@ export class LoopingBot {
 
   private async maybeOpen(candidates: LoopCandidate[]): Promise<void> {
     if (this.riskEngine.getOpenPositions().length > 0) return;
+
+    // Restart safety: the in-memory risk engine is empty after a restart, so
+    // verify the on-chain position flag before attempting an open that the
+    // contract would reject anyway (PositionAlreadyOpen).
+    if (this.healthMonitor) {
+      const alreadyOpen = await this.healthMonitor.hasOpenPosition();
+      if (alreadyOpen) {
+        this.logger.warn('On-chain position already open; skipping open attempt');
+        return;
+      }
+    }
+
     const best = candidates.find(
       (c) =>
         c.leverage === this.config.leverage &&
@@ -185,11 +214,18 @@ export class LoopingBot {
     );
     if (!best) return;
 
+    // Real USD valuation via the Aave PriceOracle so the maxMarginUsd guard
+    // is actually enforced (was previously hard-coded to 0).
+    const marginUsd = await this.rateMonitor.tokenAmountToUsd(
+      best.asset,
+      best.marginAmount,
+      best.decimals,
+    );
+
     const check = this.riskEngine.canOpen({
       symbol: best.symbol,
       leverage: best.leverage,
-      // USD valuation skipped here (no price oracle); size is bounded by MARGIN_AMOUNT
-      marginUsd: 0,
+      marginUsd,
       netApyBps: best.netApyBps,
       projectedHealthFactor: best.projectedHealthFactor,
     });
@@ -201,7 +237,8 @@ export class LoopingBot {
     if (this.config.dryRun || !this.txBuilder) {
       this.logger.info(
         `[DRY RUN] Would open ${best.leverage}x loop on ${best.symbol} ` +
-          `(net ${(best.netApyBps / 100).toFixed(2)}% APY, HF ~${best.projectedHealthFactor.toFixed(3)})`
+          `(net ${(best.netApyBps / 100).toFixed(2)}% APY, HF ~${best.projectedHealthFactor.toFixed(3)}, ` +
+          `margin ~$${marginUsd.toFixed(2)})`
       );
       return;
     }
@@ -225,11 +262,11 @@ export class LoopingBot {
       minSwapOut: 0n,
     });
 
-    this.riskEngine.recordOpen(
+    const position = this.riskEngine.recordOpen(
       {
         symbol: best.symbol,
         leverage: best.leverage,
-        marginUsd: 0,
+        marginUsd,
         netApyBps: best.netApyBps,
         projectedHealthFactor: best.projectedHealthFactor,
       },
@@ -241,6 +278,12 @@ export class LoopingBot {
       symbol: best.symbol,
       marginAmount: best.marginAmount,
       leverage: best.leverage,
+      marginUsd,
+      openTxGasUsed: approve.gasUsed ?? 0n,
+      openTxHash: sent.hash,
+      openedAt: Date.now(),
+      riskId: position.id,
+      decimals: best.decimals,
     };
     this.logger.info(
       `Loop opened: approve=${approve.hash} open=${sent.hash}`
@@ -259,7 +302,7 @@ export class LoopingBot {
       const { snapshot, action } = await this.healthMonitor.check();
 
       if (action === 'deleverage') {
-        const openPos = this.riskEngine.getOpenPositions()[0];
+        const openPos = this.openPosition;
         if (this.config.dryRun || !this.txBuilder) {
           this.logger.error(
             '[DRY RUN] HF critical — would close loop now. HF = ' +
@@ -268,27 +311,51 @@ export class LoopingBot {
           return;
         }
 
-        const closeAsset = this.openPosition?.asset ?? this.config.marginAsset;
+        const closeAsset = openPos?.asset ?? this.config.marginAsset;
         const sent = await this.txBuilder.closeLoop({
           collateralAsset: closeAsset,
           borrowAsset: closeAsset,
           swapData: '0x',
           minSwapOut: 0n,
         });
+
+        // Realized PnL: estimate accrued yield from the net APY at open over
+        // the hold duration, minus gas spent on open + close. This is an
+        // on-rate estimate (the margin itself is returned intact for a
+        // same-asset unwind), not a balance-delta measurement.
+        const closedAt = Date.now();
         if (openPos) {
-          this.riskEngine.recordClose(openPos.id, sent.hash);
-          const closedAt = Date.now();
+          const netApyBpsAtOpen =
+            this.riskEngine.getOpenPositions()[0]?.netApyBpsAtOpen ?? 0;
+          const closeGasUsed = sent.gasUsed ?? 0n;
+          const gasWei = openPos.openTxGasUsed + closeGasUsed;
+
+          const [priceUsd, fees] = await Promise.all([
+            this.rateMonitor.getAssetPriceUsd(closeAsset),
+            this.gasStrategy.getFees(),
+          ]);
+
+          const pnl = estimateRealizedPnL({
+            marginUsd: openPos.marginUsd,
+            netApyBpsAtOpen,
+            holdMs: closedAt - openPos.openedAt,
+            gasWei,
+            maxFeePerGas: fees.maxFeePerGas,
+            gasAssetPriceUsd: priceUsd,
+          });
+
+          this.riskEngine.recordClose(openPos.riskId, sent.hash, pnl.netPnlUsd);
           this.pnlTracker.record({
-            id: openPos.id,
+            id: openPos.riskId,
             openedAt: openPos.openedAt,
             closedAt,
-            asset: openPos.asset,
+            asset: openPos.symbol,
             leverage: openPos.leverage,
-            marginUsd: 0,
-            durationHours: (closedAt - openPos.openedAt) / 3_600_000,
-            grossYieldUsd: 0,
-            gasCostUsd: 0,
-            netPnlUsd: 0,
+            marginUsd: openPos.marginUsd,
+            durationHours: pnl.durationHours,
+            grossYieldUsd: pnl.grossYieldUsd,
+            gasCostUsd: pnl.gasCostUsd,
+            netPnlUsd: pnl.netPnlUsd,
             openTxHash: openPos.openTxHash,
             closeTxHash: sent.hash,
           });

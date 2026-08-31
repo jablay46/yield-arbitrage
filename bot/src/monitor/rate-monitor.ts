@@ -1,6 +1,6 @@
 import { Address } from 'viem';
 import { BasePublicClient } from '../client-types';
-import { aavePoolAbi, dataProviderAbi, erc20Abi } from '../abis';
+import { aavePoolAbi, aaveOracleAbi, dataProviderAbi, erc20Abi } from '../abis';
 import {
   ADDRESSES,
   EMODE,
@@ -8,6 +8,9 @@ import {
   TOKEN_DECIMALS,
   SECONDS_PER_YEAR,
 } from '../config/constants';
+
+/** Aave oracle prices are USD with 8 decimals. */
+export const ORACLE_USD_DECIMALS = 8;
 
 /**
  * On-chain rate for a single Aave V3 reserve.
@@ -56,10 +59,15 @@ export class RateMonitor {
   private client: BasePublicClient;
   private watchlist: Address[];
   private eModeCategory?: Promise<EModeCategoryData>;
+  /** Cached oracle price (USD, 8 decimals) keyed by asset address (lowercase). */
+  private priceCache = new Map<string, { price: number; ts: number }>();
+  /** Cache TTL in ms; 0 disables caching. */
+  private priceCacheTtlMs: number;
 
-  constructor(client: BasePublicClient, watchlist?: Address[]) {
+  constructor(client: BasePublicClient, watchlist?: Address[], priceCacheTtlMs = 0) {
     this.client = client;
     this.watchlist = watchlist ?? (Object.values(TOKENS) as Address[]);
+    this.priceCacheTtlMs = priceCacheTtlMs;
   }
 
   /** Fetch and cache the ETH-correlated e-mode limits for this bot run. */
@@ -225,5 +233,42 @@ export class RateMonitor {
   private symbolFor(asset: Address): string {
     const entry = Object.entries(TOKENS).find(([, a]) => a === asset);
     return entry ? entry[0] : asset.slice(0, 8);
+  }
+
+  /**
+   * USD price (8-decimal oracle units) of an asset from the Aave PriceOracle.
+   * Returns a plain JS number. Results are cached for `priceCacheTtlMs` so
+   * repeated valuation within one poll window doesn't add an RPC round-trip.
+   */
+  async getAssetPriceUsd(asset: Address): Promise<number> {
+    const key = asset.toLowerCase();
+    const now = Date.now();
+    const hit = this.priceCache.get(key);
+    if (hit && this.priceCacheTtlMs > 0 && now - hit.ts < this.priceCacheTtlMs) {
+      return hit.price;
+    }
+
+    const price = await this.client.readContract({
+      address: ADDRESSES.aaveOracle as Address,
+      abi: aaveOracleAbi,
+      functionName: 'getAssetPrice',
+      args: [asset],
+    });
+    const priceUsd = Number(price) / 10 ** ORACLE_USD_DECIMALS;
+    this.priceCache.set(key, { price: priceUsd, ts: now });
+    return priceUsd;
+  }
+
+  /**
+   * USD value of a token `amount` (smallest-unit bigint) at the oracle price.
+   * decimals is the token's decimals (e.g. 18 for WETH, 6 for USDC).
+   */
+  async tokenAmountToUsd(
+    asset: Address,
+    amount: bigint,
+    decimals: number,
+  ): Promise<number> {
+    const priceUsd = await this.getAssetPriceUsd(asset);
+    return (Number(amount) / 10 ** decimals) * priceUsd;
   }
 }

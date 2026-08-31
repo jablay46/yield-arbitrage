@@ -6,6 +6,10 @@ solc = "0.8.20"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
+# Base mainnet (and the Aave V3 Pool on recent blocks) uses EVM opcodes that
+# are only active from Prague. Pin the version so fork tests don't hit
+# `NotActivated` halts on the Aave flashloan path.
+evm_version = "prague"
 
 [rpc_endpoints]
 base = "${BASE_RPC_URL}"
@@ -22,3 +26,4 @@ solc = "0.8.20"
 optimizer = true
 optimizer_runs = 10000
 via_ir = true
+evm_version = "prague"

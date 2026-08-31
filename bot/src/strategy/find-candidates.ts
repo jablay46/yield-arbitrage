@@ -11,6 +11,7 @@ import {
 export interface LoopCandidate {
   asset: Address;
   symbol: string;
+  decimals: number;
   leverage: number;
   marginAmount: bigint;
   flashloanAmount: bigint;
@@ -78,6 +79,7 @@ export function findLoopCandidates(
       candidates.push({
         asset: rate.asset,
         symbol: rate.symbol,
+        decimals: rate.decimals,
         leverage,
         marginAmount,
         flashloanAmount: flashloanAmountFor(marginAmount, leverage),

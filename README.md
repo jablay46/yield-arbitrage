@@ -23,8 +23,7 @@ Unwinding (`closeLoop`) is flashloan-powered and returns the margin in one tx.
 |---|---|
 | `contracts/LoopingExecutor.sol` | open/close loops; leverage 2x/3x/5x; same-asset mode plus cross-asset mode via the pool's atomic swap callback (atomicLoop model) |
 | `contracts/FlashloanBase.sol` | Aave V3 + Morpho Blue flashloan base with initiator validation |
-| `contracts/security/SecurityUtils.sol` | two-step ownership, pausable, reentrancy guard, emergency withdraw |
-| `contracts/libraries/RateMath.sol` | health factor math (WAD) |
+| `contracts/security/SecurityUtils.sol` | thin wrapper over OpenZeppelin's audited Ownable2Step, ReentrancyGuard, and Pausable — plus pause/unpause and a `ZeroAddress` error |
 | `contracts/interfaces/*` | Aave V3 + Morpho Blue interfaces |
 
 ## Development
@@ -51,10 +50,19 @@ on-chain health factor, and deleverages when it drops below the critical
 threshold. Defaults to dry-run — it never sends a transaction unless you
 opt in.
 
+- **Real USD valuation**: margin is priced via the Aave PriceOracle, so the
+  `MAX_MARGIN_USD` guard is actually enforced (not bypassed).
+- **Restart safety**: before opening, the bot reads the on-chain
+  `positionOpen()` flag so a restart never attempts a redundant open that the
+  contract would reject.
+- **Realized PnL**: on close, PnL is estimated from the net APY captured at
+  open over the hold duration, minus gas spent on open + close (priced via
+  the oracle). Persisted to `data/pnl.json`.
+
 ```bash
 cd bot
 npm install
-npm test              # unit tests (32)
+npm test              # unit tests (52)
 npm run build
 cp ../.env.example ../.env  # configure, keep DRY_RUN=true to monitor only
 npm start
@@ -76,13 +84,16 @@ never reaches the mempool.
 | `DRY_RUN` | true | simulate only |
 | `AUTO_TRADE` | false | open the best loop automatically |
 | `MIN_NET_APY_BPS` | 50 | minimum yearly net yield on margin |
+| `POLL_INTERVAL_MS` | 30000 | how often rates are refreshed / candidates re-ranked |
+| `HEALTH_CHECK_INTERVAL_MS` | 60000 | how often the on-chain health factor is polled |
+| `PRICE_CACHE_TTL_MS` | 30000 | oracle price cache lifetime (avoids an RPC per cycle) |
 | `USE_PENDING_BLOCK` | true | simulate/read against the Flashblock preconfirmation block |
 
 ## Test status
 
-- Fork suite (real Base mainnet state): **16/16 passing**
-- Fuzz suite (pure math): **7/7 passing** — `forge test` without a fork
-- Bot unit tests: **32/32 passing** — `npm test`
+- Fork suite (real Base mainnet state): **18/18 passing** — pinned to
+  `evm_version = "prague"` so Aave's recent-block opcodes activate.
+- Bot unit tests: **52/52 passing** — `npm test`
 - E2E (anvil fork of Base): full cycle approve → openLoop 2x → closeLoop —
   margin returned in one tx
 
@@ -103,10 +114,16 @@ At 0.01 gwei Base fees both are well under $0.01.
 - **Liquidation**: HF falls when debt grows faster than collateral yield.
   5x leverage is only possible in e-mode (LT 90%) and is risky: HF 1.125 at open.
 - **Cross-asset loops** add price risk — the swap callback enforces atomic
-  solvency (`minSwapOut`, debt must be coverable at execution price).
+  solvency (`minSwapOut`, debt must be coverable at execution price). The
+  swap router is a trusted, owner-set component: a malicious router could
+  reenter the flashloan callback. Only use a router you fully control.
 - **Operator mistake**: only the executor owner can open/close; keep the key
   cold. 3-of-5 multisig setup is strongly recommended (unimplemented yet).
+- **PnL is an estimate**: realized PnL is derived from the net APY at open
+  over the hold duration minus gas — it is not a balance-delta measurement.
+  Treat `data/pnl.json` as an indicative accounting aid, not audited PnL.
 
-Software status: contracts fork-tested against the real Base state;
-bot unit-tested and smoke-tested on live data. Auditing by a third party is
-still required before deploying real funds.
+Software status: contracts fork-tested against the real Base state; security
+primitives delegate to OpenZeppelin's audited libraries. Bot unit-tested and
+smoke-tested on live data. Auditing by a third party is still required before
+deploying real funds.

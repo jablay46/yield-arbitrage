@@ -12,6 +12,9 @@ export const ADDRESSES = {
   // Morpho Blue singleton (0% flashloan fee)
   morpho: '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',
 
+  // Aave V3 PriceOracle (USD, 8 decimals) — resolved via PoolAddressesProvider.getPriceOracle()
+  aaveOracle: '0x2Cc0Fc26eD4563A5ce5e8bdcfe1A2878676Ae156',
+
   // Uniswap V3 SwapRouter02 (Base)
   swapRouter: '0x2626664c2603336E57B271c5C0b26F421741e481',
 } as const;
