@@ -1,295 +1,295 @@
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http, parseEther } from 'viem';
+import { createPublicClient, createWalletClient, http } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
+import { BotConfig, loadConfigFromEnv } from './config';
 import { RateMonitor } from './monitor/rate-monitor';
-import { OpportunityFilter } from './monitor/opportunity-filter';
+import { HealthMonitor } from './monitor/health-monitor';
+import { findLoopCandidates, LoopCandidate } from './strategy/find-candidates';
 import { RiskEngine } from './position/risk-engine';
 import { PnLTracker } from './position/pnl-tracker';
 import { TransactionBuilder } from './orchestrator/tx-builder';
-import { BotConfig, DEFAULT_CONFIG } from './config';
+import { GasStrategy } from './utils/gas-strategy';
+import { createLogger, Logger } from './utils/logger';
 
 /**
- * Main Arbitrage Bot
- * Coordinates all components for yield arbitrage execution
+ * Leveraged yield looping bot.
+ *
+ * - Monitors real Aave V3 rates and ranks leveraged loop candidates.
+ * - Optionally opens a loop (autoTrade) via the LoopingExecutor contract.
+ * - Continuously watches the on-chain health factor and deleverages
+ *   (closeLoop) when it falls below the critical threshold.
+ * - Defaults to DRY_RUN: nothing is ever sent without explicit opt-in.
  */
-export class ArbitrageBot {
+export class LoopingBot {
   private config: BotConfig;
+  private logger: Logger;
   private rateMonitor: RateMonitor;
-  private opportunityFilter: OpportunityFilter;
   private riskEngine: RiskEngine;
   private pnlTracker: PnLTracker;
+  private healthMonitor?: HealthMonitor;
   private txBuilder?: TransactionBuilder;
-  
-  private isRunning: boolean = false;
-  private lastExecutionTime: number = 0;
-  
-  constructor(config: Partial<BotConfig> = {}) {
-    // Merge configs
-    this.config = {
-      ...DEFAULT_CONFIG,
-      ...config,
-      // Ensure required fields
-      network: config.network ?? 'base',
-      rpcUrl: config.rpcUrl ?? process.env.BASE_RPC_URL ?? '',
-      privateKey: config.privateKey ?? process.env.PRIVATE_KEY ?? '',
-    } as BotConfig;
-    
-    // Initialize components
+
+  private running = false;
+  private timers: NodeJS.Timeout[] = [];
+
+  constructor(config: BotConfig) {
+    this.config = config;
+    this.logger = createLogger(config.logLevel);
+
     const publicClient = createPublicClient({
       chain: base,
-      transport: http(this.config.rpcUrl),
+      transport: http(config.rpcUrl),
     });
-    
-    this.rateMonitor = new RateMonitor(this.config.rpcUrl);
-    this.opportunityFilter = new OpportunityFilter(
-      {
-        minProfitUsd: this.config.minProfitUsd,
-        maxSlippageBps: this.config.maxSlippageBps,
-        maxGasPriceGwei: this.config.maxGasPriceGwei,
-        gasBufferPercent: this.config.gasBufferPercent,
-      },
-      publicClient
-    );
-    
+
+    this.rateMonitor = new RateMonitor(publicClient);
     this.riskEngine = new RiskEngine({
-      maxPositionSizeUsd: Number(this.config.maxFlashloanAmount) / 1e6,
-      maxDailyLossUsd: this.config.minProfitUsd * 100,
+      maxMarginUsd: config.maxMarginUsd,
+      minNetApyBps: config.minNetApyBps,
+      cooldownMs: config.cooldownMs,
+      minHealthFactor: Number(config.minHealthFactorWad) / 1e18,
     });
-    
-    this.pnlTracker = new PnLTracker();
-    
-    // Initialize transaction builder if private key provided
-    if (this.config.privateKey) {
-      try {
-        const walletClient = createWalletClient({
-          chain: base,
-          transport: http(this.config.rpcUrl),
-          account: this.config.privateKey as any,
-        });
-        
-        this.txBuilder = new TransactionBuilder(
-          publicClient,
-          walletClient,
-          walletClient.account,
-          {
-            arbitrageExecutorAddress: '0x', // Set from config
-          }
-        );
-      } catch (error) {
-        console.warn('Failed to initialize wallet client:', error);
-      }
+    this.pnlTracker = new PnLTracker(config.pnlPath);
+
+    const gasStrategy = new GasStrategy(
+      publicClient,
+      {
+        maxGasPriceGwei: config.maxGasPriceGwei,
+        priorityFeeGwei: config.priorityFeeGwei,
+        gasBufferPercent: config.gasBufferPercent,
+      },
+      this.logger
+    );
+
+    if (config.executorAddress) {
+      this.healthMonitor = new HealthMonitor(
+        publicClient,
+        config.executorAddress,
+        config.healthFactorWarnWad,
+        config.healthFactorCriticalWad,
+        this.logger
+      );
+    }
+
+    if (config.privateKey && config.executorAddress) {
+      const account = privateKeyToAccount(
+        config.privateKey as `0x${string}`
+      );
+      const walletClient = createWalletClient({
+        chain: base,
+        transport: http(config.rpcUrl),
+        account,
+      });
+      this.txBuilder = new TransactionBuilder(
+        publicClient,
+        walletClient,
+        account,
+        config.executorAddress,
+        gasStrategy,
+        this.logger
+      );
     }
   }
-  
-  /**
-   * Start the bot
-   */
-  async start(): Promise<void> {
-    if (this.isRunning) {
-      console.log('Bot is already running');
+
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+
+    this.logger.info('Starting looping bot', {
+      network: this.config.network,
+      dryRun: this.config.dryRun,
+      autoTrade: this.config.autoTrade,
+      leverage: this.config.leverage,
+    });
+
+    if (!this.config.dryRun) {
+      this.logger.warn('LIVE MODE — real transactions will be sent');
+    }
+
+    this.timers.push(
+      setInterval(() => void this.monitorCycle(), this.config.pollIntervalMs)
+    );
+    if (this.healthMonitor) {
+      this.timers.push(
+        setInterval(
+          () => void this.healthCycle(),
+          this.config.healthCheckIntervalMs
+        )
+      );
+    }
+
+    void this.monitorCycle();
+  }
+
+  stop(): void {
+    this.running = false;
+    for (const t of this.timers) clearInterval(t);
+    this.timers = [];
+    this.logger.info('Bot stopped');
+  }
+
+  /** Fetch live rates and rank loop candidates. */
+  private async monitorCycle(): Promise<void> {
+    if (!this.running) return;
+    try {
+      const rates = await this.rateMonitor.getAllRates();
+      const candidates = findLoopCandidates(
+        rates,
+        this.config.marginAmount,
+        Number(this.config.minHealthFactorWad) / 1e18,
+        this.config.minNetApyBps
+      );
+
+      this.logTopCandidates(candidates);
+
+      if (this.config.autoTrade) {
+        await this.maybeOpen(candidates);
+      }
+    } catch (error) {
+      this.logger.error(`Monitor cycle failed: ${error}`);
+    }
+  }
+
+  private async maybeOpen(candidates: LoopCandidate[]): Promise<void> {
+    if (this.riskEngine.getOpenPositions().length > 0) return;
+    const best = candidates.find((c) => c.leverage === this.config.leverage);
+    if (!best) return;
+
+    const check = this.riskEngine.canOpen({
+      symbol: best.symbol,
+      leverage: best.leverage,
+      // USD valuation skipped here (no price oracle); size is bounded by MARGIN_AMOUNT
+      marginUsd: 0,
+      netApyBps: best.netApyBps,
+      projectedHealthFactor: best.projectedHealthFactor,
+    });
+    if (!check.allowed) {
+      this.logger.info(`Skipping candidate: ${check.reason}`);
       return;
     }
-    
-    this.isRunning = true;
-    console.log('Starting Arbitrage Bot...');
-    console.log(`Network: ${this.config.network}`);
-    console.log(`Poll interval: ${this.config.pollIntervalMs}ms`);
-    
-    this.runLoop();
-  }
-  
-  /**
-   * Stop the bot
-   */
-  stop(): void {
-    this.isRunning = false;
-    console.log('Bot stopped');
-  }
-  
-  /**
-   * Main bot loop
-   */
-  private async runLoop(): Promise<void> {
-    while (this.isRunning) {
-      try {
-        await this.scanAndExecute();
-      } catch (error) {
-        console.error('Error in bot loop:', error);
-      }
-      
-      // Wait for next poll
-      await this.sleep(this.config.pollIntervalMs);
+
+    if (this.config.dryRun || !this.txBuilder) {
+      this.logger.info(
+        `[DRY RUN] Would open ${best.leverage}x loop on ${best.symbol} ` +
+          `(net ${(best.netApyBps / 100).toFixed(2)}% APY, HF ~${best.projectedHealthFactor.toFixed(3)})`
+      );
+      return;
     }
-  }
-  
-  /**
-   * Scan for opportunities and execute if profitable
-   */
-  private async scanAndExecute(): Promise<void> {
-    console.log('\n--- Scanning for opportunities ---');
-    
-    // Get current rates
-    const rates = await this.rateMonitor.getAllRates();
-    console.log(`Fetched ${rates.length} market rates`);
-    
-    // Find opportunities
-    const opportunities = this.rateMonitor.findOpportunities(
-      rates,
-      this.config.opportunityThresholdBps
+
+    if (best.needsEmode) {
+      this.logger.info('Candidate requires e-mode; set it on the executor first');
+      return;
+    }
+
+    const approve = await this.txBuilder.approveMargin(
+      best.asset,
+      best.marginAmount
     );
-    console.log(`Found ${opportunities.length} potential opportunities`);
-    
-    if (opportunities.length === 0) return;
-    
-    // Filter and validate opportunities
-    const validated = await this.opportunityFilter.filter(opportunities);
-    console.log(`${validated.filter(o => o.isProfitable).length} profitable opportunities`);
-    
-    // Execute best opportunity
-    for (const opportunity of validated) {
-      if (!opportunity.isProfitable) continue;
-      
-      // Risk check
-      const riskCheck = this.riskEngine.canExecute(opportunity);
-      if (!riskCheck.allowed) {
-        console.log(`Risk check failed: ${riskCheck.reason}`);
-        continue;
-      }
-      
-      // Execute
-      await this.executeOpportunity(opportunity);
-      
-      // Wait between executions
-      await this.sleep(5000);
-    }
+    const sent = await this.txBuilder.openLoop({
+      collateralAsset: best.asset,
+      borrowAsset: best.asset,
+      marginAmount: best.marginAmount,
+      leverage: best.leverage as 2 | 3 | 5,
+      minHealthFactor: this.config.minHealthFactorWad,
+      swapData: '0x',
+      minSwapOut: 0n,
+    });
+
+    this.riskEngine.recordOpen(
+      {
+        symbol: best.symbol,
+        leverage: best.leverage,
+        marginUsd: 0,
+        netApyBps: best.netApyBps,
+        projectedHealthFactor: best.projectedHealthFactor,
+      },
+      best.marginAmount,
+      sent.hash
+    );
+    this.logger.info(
+      `Loop opened: approve=${approve.hash} open=${sent.hash}`
+    );
   }
-  
-  /**
-   * Execute an arbitrage opportunity
-   */
-  private async executeOpportunity(opportunity: any): Promise<void> {
-    console.log(`\n>>> Executing arbitrage:`);
-    console.log(`    Supply: ${opportunity.supplyProtocol} @ ${opportunity.supplyApy / 100}% APY`);
-    console.log(`    Borrow: ${opportunity.borrowProtocol} @ ${opportunity.borrowApr / 100}% APR`);
-    console.log(`    Spread: ${opportunity.spread / 100}%`);
-    console.log(`    Est. profit: $${opportunity.netProfitUsd.toFixed(2)}`);
-    console.log(`    Flashloan: $${(Number(opportunity.flashloanAmount) / 1e6).toFixed(2)}`);
-    
-    // Open position
-    const position = this.riskEngine.openPosition(opportunity);
-    console.log(`    Position ID: ${position.id}`);
-    
-    // In production, send transaction here
-    // For now, simulate execution
+
+  /** Health factor watchdog — deleverages when critical. */
+  private async healthCycle(): Promise<void> {
+    if (!this.running || !this.healthMonitor) return;
     try {
-      // Simulate execution delay
-      await this.sleep(2000);
-      
-      // Simulate success/failure (90% success rate for demo)
-      const success = Math.random() > 0.1;
-      
-      if (success) {
-        // Simulate profit (50-150% of estimated)
-        const profitMultiplier = 0.5 + Math.random();
-        position.profitUsd = opportunity.netProfitUsd * profitMultiplier;
-        position.netProfitUsd = position.profitUsd - position.gasCostUsd;
-        position.status = 'completed';
-        
-        console.log(`    ✓ Success! Net profit: $${position.netProfitUsd.toFixed(2)}`);
-      } else {
-        position.status = 'failed';
-        position.error = 'Simulated failure';
-        position.netProfitUsd = -position.gasCostUsd;
-        
-        console.log(`    ✗ Failed: ${position.error}`);
+      const open = await this.healthMonitor.hasOpenPosition();
+      if (!open) return;
+
+      const { snapshot, action } = await this.healthMonitor.check();
+
+      if (action === 'deleverage') {
+        const openPos = this.riskEngine.getOpenPositions()[0];
+        if (this.config.dryRun || !this.txBuilder) {
+          this.logger.error(
+            '[DRY RUN] HF critical — would close loop now. HF = ' +
+              (Number(snapshot.healthFactor) / 1e18).toFixed(4)
+          );
+          return;
+        }
+
+        const sent = await this.txBuilder.closeLoop({
+          collateralAsset: this.config.marginAsset,
+          borrowAsset: this.config.marginAsset,
+          swapData: '0x',
+          minSwapOut: 0n,
+        });
+        if (openPos) {
+          this.riskEngine.recordClose(openPos.id, sent.hash);
+        }
+        this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
       }
-      
-      // Update position
-      this.riskEngine.updatePosition(position.id, position.status, {
-        profitUsd: position.profitUsd,
-        netProfitUsd: position.netProfitUsd,
-      });
-      
-      // Record PnL
-      this.pnlTracker.recordTrade(position);
-      
-    } catch (error: any) {
-      position.status = 'failed';
-      position.error = error.message;
-      position.netProfitUsd = -position.gasCostUsd;
-      
-      this.riskEngine.updatePosition(position.id, 'failed', {
-        error: error.message,
-      });
-      
-      console.log(`    ✗ Error: ${error.message}`);
+    } catch (error) {
+      this.logger.error(`Health cycle failed: ${error}`);
     }
-    
-    // Print stats
-    this.printStats();
   }
-  
-  /**
-   * Print current statistics
-   */
-  private printStats(): void {
-    const riskStats = this.riskEngine.getStats();
-    const pnlSummary = this.pnlTracker.getSummary();
-    
-    console.log('\n--- Stats ---');
-    console.log(`Active positions: ${riskStats.activePositions}`);
-    console.log(`Daily PnL: $${pnlSummary.profitToday.toFixed(2)}`);
-    console.log(`Total PnL: $${pnlSummary.totalNetProfit.toFixed(2)}`);
-    console.log(`Win rate: ${pnlSummary.winRate.toFixed(1)}%`);
+
+  private logTopCandidates(candidates: LoopCandidate[]): void {
+    const top = candidates.slice(0, 5);
+    if (top.length === 0) {
+      this.logger.info('No viable loop candidates this cycle');
+      return;
+    }
+    for (const c of top) {
+      this.logger.info(
+        `${c.symbol} ${c.leverage}x | supply ${(c.supplyApyBps / 100).toFixed(2)}% ` +
+          `| borrow ${(c.borrowAprBps / 100).toFixed(2)}% ` +
+          `| net ${(c.netApyBps / 100).toFixed(2)}% | HF ~${c.projectedHealthFactor.toFixed(3)}` +
+          (c.needsEmode ? ' | needs e-mode' : '')
+      );
+    }
   }
-  
-  /**
-   * Sleep utility
-   */
-  private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-  
-  /**
-   * Get bot status
-   */
-  getStatus(): {
-    isRunning: boolean;
-    stats: ReturnType<typeof this.riskEngine.getStats>;
-    pnl: ReturnType<typeof this.pnlTracker.getSummary>;
-  } {
+
+  getStatus() {
     return {
-      isRunning: this.isRunning,
-      stats: this.riskEngine.getStats(),
+      running: this.running,
+      openPositions: this.riskEngine.getOpenPositions(),
       pnl: this.pnlTracker.getSummary(),
     };
   }
 }
 
-// Export for CLI usage
 export async function main(): Promise<void> {
-  const config: Partial<BotConfig> = {
-    rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
-    privateKey: process.env.PRIVATE_KEY || '',
-    network: 'base',
-    pollIntervalMs: 10000,
-    minProfitUsd: 10,
-  };
-  
-  const bot = new ArbitrageBot(config);
-  
-  // Handle graceful shutdown
-  process.on('SIGINT', () => {
-    console.log('\nShutting down...');
+  const config = loadConfigFromEnv();
+  const bot = new LoopingBot(config);
+
+  const shutdown = () => {
     bot.stop();
     process.exit(0);
-  });
-  
-  await bot.start();
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  bot.start();
 }
 
-// Run if executed directly
 if (require.main === module) {
-  main().catch(console.error);
+  main().catch((error) => {
+    console.error('Fatal:', error);
+    process.exit(1);
+  });
 }
+

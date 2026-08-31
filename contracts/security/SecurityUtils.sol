@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title ReentrancyGuard
- * @notice Prevents reentrancy attacks
+ * @notice Prevents reentrant calls to protected functions
  */
 abstract contract ReentrancyGuard {
     uint256 private constant _NOT_ENTERED = 1;
@@ -17,9 +17,6 @@ abstract contract ReentrancyGuard {
         _status = _NOT_ENTERED;
     }
 
-    /**
-     * @dev Prevents reentrancy by setting the status
-     */
     modifier nonReentrant() {
         _nonReentrantBefore();
         _;
@@ -39,18 +36,18 @@ abstract contract ReentrancyGuard {
 }
 
 /**
- * @title Ownable
- * @notice Ownable contract with owner role
+ * @title Ownable2Step
+ * @notice Ownership with a two-step transfer to avoid accidental loss of control
  */
-abstract contract Ownable {
+abstract contract Ownable2Step {
     address public owner;
     address public pendingOwner;
 
-    event OwnershipTransferred(
+    event OwnershipTransferStarted(
         address indexed previousOwner,
         address indexed newOwner
     );
-    event OwnershipPending(
+    event OwnershipTransferred(
         address indexed previousOwner,
         address indexed newOwner
     );
@@ -63,27 +60,18 @@ abstract contract Ownable {
         owner = msg.sender;
     }
 
-    /**
-     * @notice Transfer ownership to a new account
-     */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
         pendingOwner = newOwner;
-        emit OwnershipPending(owner, newOwner);
+        emit OwnershipTransferStarted(owner, newOwner);
     }
 
-    /**
-     * @notice Accept ownership transfer
-     */
     function acceptOwnership() external onlyPendingOwner {
         emit OwnershipTransferred(owner, pendingOwner);
         owner = pendingOwner;
         pendingOwner = address(0);
     }
 
-    /**
-     * @notice Renounce ownership
-     */
     function renounceOwnership() external onlyOwner {
         emit OwnershipTransferred(owner, address(0));
         owner = address(0);
@@ -102,70 +90,52 @@ abstract contract Ownable {
 
 /**
  * @title Pausable
- * @notice Circuit breaker pattern
+ * @notice Circuit breaker. Pause control is exposed by the inheriting contract.
  */
 abstract contract Pausable {
     event Paused(address account);
     event Unpaused(address account);
 
+    error EnforcedPause();
+    error ExpectedPause();
+
     bool private _paused;
 
-    error Paused();
-    error NotPaused();
-
-    constructor() {
-        _paused = false;
-    }
-
-    /**
-     * @notice Returns if contract is paused
-     */
     function paused() public view returns (bool) {
         return _paused;
     }
 
-    /**
-     * @notice Pause the contract
-     */
-    function pause() external onlyOwner whenNotPaused {
+    function _pause() internal whenNotPaused {
         _paused = true;
         emit Paused(msg.sender);
     }
 
-    /**
-     * @notice Unpause the contract
-     */
-    function unpause() external onlyOwner whenPaused {
+    function _unpause() internal whenPaused {
         _paused = false;
         emit Unpaused(msg.sender);
     }
 
     modifier whenNotPaused() {
-        if (_paused) revert Paused();
+        if (_paused) revert EnforcedPause();
         _;
     }
 
     modifier whenPaused() {
-        if (!_paused) revert NotPaused();
+        if (!_paused) revert ExpectedPause();
         _;
     }
-
-    // Use Ownable for onlyOwner
-    function _msgSender() internal view virtual returns (address) {
-        return msg.sender;
-    }
-
-    function _msgData() internal view virtual returns (bytes calldata) {
-        return msg.data;
-    }
-
-    modifier onlyOwner() virtual;
 }
 
 /**
  * @title SecurityUtils
- * @notice Combined security utilities
+ * @notice Combined security base: 2-step ownership, reentrancy guard, circuit breaker
  */
-abstract contract SecurityUtils is Ownable, ReentrancyGuard, Pausable {
-    // Inherit multiple security features
+abstract contract SecurityUtils is Ownable2Step, ReentrancyGuard, Pausable {
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
 }

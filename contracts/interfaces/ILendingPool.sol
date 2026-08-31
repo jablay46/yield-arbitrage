@@ -2,17 +2,32 @@
 pragma solidity ^0.8.20;
 
 /**
+ * @notice Aave V3 ReserveData as returned by Pool.getReserveData.
+ * @dev Field order must match the on-chain ABI exactly for decoding to work.
+ */
+struct ReserveData {
+    uint256 configuration;
+    uint128 liquidityIndex;
+    uint128 currentLiquidityRate;
+    uint128 variableBorrowIndex;
+    uint128 currentVariableBorrowRate;
+    uint128 currentStableBorrowRate;
+    uint40 lastUpdateTimestamp;
+    uint16 id;
+    address aTokenAddress;
+    address stableDebtTokenAddress;
+    address variableDebtTokenAddress;
+    address interestRateStrategyAddress;
+    uint128 accruedToTreasury;
+    uint128 unbacked;
+    uint128 isolationModeTotalDebt;
+}
+
+/**
  * @title ILendingPool
- * @notice Interface for generic lending pool
+ * @notice Aave V3 Pool interface used by the looping executor.
  */
 interface ILendingPool {
-    /**
-     * @notice Supplys assets to the pool
-     * @param asset The asset to supply
-     * @param amount The amount to supply
-     * @param onBehalfOf The address to receive the supplied tokens
-     * @param referralCode Referral code
-     */
     function supply(
         address asset,
         uint256 amount,
@@ -20,62 +35,55 @@ interface ILendingPool {
         uint16 referralCode
     ) external;
 
-    /**
-     * @notice Withdraws assets from the pool
-     * @param asset The asset to withdraw
-     * @param amount The amount to withdraw
-     * @param receiver The address to receive the withdrawn tokens
-     * @return The actual amount withdrawn
-     */
     function withdraw(
         address asset,
         uint256 amount,
-        address receiver
+        address to
     ) external returns (uint256);
 
     /**
-     * @notice Borrows assets from the pool
-     * @param asset The asset to borrow
-     * @param amount The amount to borrow
-     * @param interestRateMode The interest rate mode (1 for stable, 2 for variable)
-     * @param onBehalfOf The address to receive the borrowed tokens
-     * @param referralCode Referral code
+     * @param interestRateMode 1 = stable, 2 = variable
+     * @dev Parameter order matches Aave V3: referralCode comes BEFORE onBehalfOf.
      */
     function borrow(
         address asset,
         uint256 amount,
         uint256 interestRateMode,
-        address onBehalfOf,
-        uint16 referralCode
+        uint16 referralCode,
+        address onBehalfOf
     ) external;
 
-    /**
-     * @notice Repays borrowed assets
-     * @param asset The asset to repay
-     * @param amount The amount to repay
-     * @param rateMode The interest rate mode
-     * @param onBehalfOf The address to repay for
-     * @return The actual amount repaid
-     */
     function repay(
         address asset,
         uint256 amount,
-        uint256 rateMode,
+        uint256 interestRateMode,
         address onBehalfOf
     ) external returns (uint256);
 
-    /**
-     * @notice Gets reserve data
-     * @param asset The asset address
-     * @return data The reserve data
-     */
-    function getReserveData(address asset) external view returns (bytes32 data);
+    function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external;
+
+    function setUserEMode(uint8 categoryId) external;
+
+    function getReserveData(address asset) external view returns (ReserveData memory);
+
+    function getUserAccountData(address user)
+        external
+        view
+        returns (
+            uint256 totalCollateralBase,
+            uint256 totalDebtBase,
+            uint256 availableBorrowsBase,
+            uint256 currentLiquidationThreshold,
+            uint256 ltv,
+            uint256 healthFactor
+        );
 }
 
 /**
- * @title ILendingPoolAddressesProvider
- * @notice Interface for lending pool addresses provider
+ * @title IAavePoolAddressesProvider
+ * @notice Interface for the Aave Pool Addresses Provider
  */
-interface ILendingPoolAddressesProvider {
-    function getLendingPool() external view returns (address);
+interface IAavePoolAddressesProvider {
+    function getPool() external view returns (address);
+    function getPoolDataProvider() external view returns (address);
 }

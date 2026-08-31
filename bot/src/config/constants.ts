@@ -1,120 +1,67 @@
-// Token addresses on Base
-export const TOKENS = {
-  // Native/Wrapped
-  ETH: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE',
-  WETH: '0x4200000000000000000000000000000000000006',
-  
-  // Stablecoins
-  USDC: '0x833589fCD6eDb6E08f4c7C32D4f71B54bdA02913',
-  DAI: '0x4fEb4c42B6C8e3bE9C1E1b2D3E4F5A6B7C8D9E0',
-  USDT: '0xfde4C96c8591873D46a4af72f87e6aE4D6D3C7A3',
-  USDbC: '0xd9aAEc86B65D86f6A7B5B1b0a6B1c2d3e4f5A6B',
-  
-  // Other assets
-  cbBTC: '0xcbB7C0000aB88B3b5a3b2c0D1E2F3A4B5C6D7E8',
-  WBTC: '0x68f5c6aA807200A08BF4B3c1D2D2c9e6f1A3B4C5',
+/**
+ * Verified Base mainnet addresses.
+ * Aave pool/data-provider were resolved on-chain via the canonical
+ * PoolAddressesProvider (0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D).
+ */
+export const ADDRESSES = {
+  // Aave V3 (Base) — resolved on-chain, do not guess
+  aavePoolAddressesProvider: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D',
+  aavePool: '0xA238Dd80C259a72e81d7e4664a9801593F98d1c5',
+  aaveProtocolDataProvider: '0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A',
+
+  // Morpho Blue singleton (0% flashloan fee)
+  morpho: '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb',
+
+  // Uniswap V3 SwapRouter02 (Base)
+  swapRouter: '0x2626664c2603336E57B271c5C0b26F421741e481',
 } as const;
 
-// Token decimals
+/** Tokens present in the Aave V3 Base reserves list (verified via getReservesList). */
+export const TOKENS = {
+  WETH: '0x4200000000000000000000000000000000000006',
+  cbETH: '0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22',
+  wstETH: '0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452',
+  weETH: '0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A',
+  USDC: '0x833589fCD6eDb6E08f4c7C32D4f71B54bdA02913',
+  USDbC: '0xd9aAEc86B65D86f6A7B5B1b0c42FFA531710b6CA',
+  cbBTC: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf',
+  EURC: '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
+} as const;
+
 export const TOKEN_DECIMALS: Record<string, number> = {
-  ETH: 18,
   WETH: 18,
+  cbETH: 18,
+  wstETH: 18,
+  weETH: 18,
   USDC: 6,
-  DAI: 18,
-  USDT: 6,
   USDbC: 6,
   cbBTC: 8,
-  WBTC: 8,
+  EURC: 6,
 };
 
-// Token symbols to addresses
-export const TOKEN_BY_SYMBOL: Record<string, string> = {
-  ETH: TOKENS.ETH,
-  WETH: TOKENS.WETH,
-  USDC: TOKENS.USDC,
-  DAI: TOKENS.DAI,
-  USDT: TOKENS.USDT,
-  USDbC: TOKENS.USDbC,
-};
+/** Allowed leverage multipliers — enforced on-chain by LoopingExecutor. */
+export const LEVERAGE_LEVELS = [2, 3, 5] as const;
 
-// Protocol identifiers
-export enum Protocol {
-  AAVE = 'aave',
-  MORPHO = 'morpho',
-  MOONWELL = 'moonwell',
-}
+/** Verified on-chain: Aave V3 Base FLASHLOAN_PREMIUM_TOTAL (was 9 bps at launch). */
+export const AAVE_FLASHLOAN_PREMIUM_BPS = 5;
+/** Morpho Blue flashloans are free. */
+export const MORPHO_FLASHLOAN_PREMIUM_BPS = 0;
 
-// Protocol configurations
-export const PROTOCOLS = {
-  [Protocol.AAVE]: {
-    name: 'Aave V3 (Spark)',
-    poolAddress: '0x4fAeC549f4327De1cF0a0D4f4D5d8d9fA0B1C2D3',
-    flashloanFeeBps: 9, // 0.09%
-    supportsFlashloan: true,
-  },
-  [Protocol.MORPHO]: {
-    name: 'Morpho',
-    poolAddress: '0xBBBBbBBBBbbbbBBBBBBBBbbbbbbbbBBBBBBBBBB',
-    flashloanFeeBps: 0, // Varies by market
-    supportsFlashloan: true,
-  },
-  [Protocol.MOONWELL]: {
-    name: 'Moonwell',
-    poolAddress: '0xDDDDdDDDDddddDDDDDDDDddddDDDDDDDDDDDD',
-    flashloanFeeBps: 0, // Check current fee
-    supportsFlashloan: true,
-  },
+/** Aave e-mode categories on Base (verified via getEModeCategoryData). */
+export const EMODE = {
+  NONE: 0,
+  ETH_CORRELATED: 1, // LT 90%
 } as const;
 
-// Liquidity pair configurations for arbitrage
-export const ARBITRAGE_PAIRS = [
-  {
-    name: 'USDC-DAI',
-    supplyToken: TOKENS.USDC,
-    borrowToken: TOKENS.DAI,
-    protocols: [Protocol.AAVE, Protocol.MORPHO, Protocol.MOONWELL],
-  },
-  {
-    name: 'USDC-USDT',
-    supplyToken: TOKENS.USDC,
-    borrowToken: TOKENS.USDT,
-    protocols: [Protocol.AAVE, Protocol.MORPHO, Protocol.MOONWELL],
-  },
-  {
-    name: 'DAI-USDC',
-    supplyToken: TOKENS.DAI,
-    borrowToken: TOKENS.USDC,
-    protocols: [Protocol.AAVE, Protocol.MORPHO, Protocol.MOONWELL],
-  },
-] as const;
+export const SECONDS_PER_YEAR = 365 * 24 * 60 * 60;
+export const RAY = 10n ** 27n;
+export const WAD = 10n ** 18n;
+export const BPS_DENOMINATOR = 10000;
 
-// Block times (approximate)
-export const BLOCK_TIMES = {
-  base: 2, // seconds
-  baseSepolia: 2,
-} as const;
-
-// Gas estimates (approximate in gas units)
+/** Rough gas estimates used for cost projection before simulation. */
 export const GAS_ESTIMATES = {
-  flashloan: 350000,
-  supply: 200000,
-  borrow: 150000,
-  repay: 150000,
-  withdraw: 200000,
-  swap: 250000,
-  // Total arbitrage execution
-  arbitrage: 500000,
-} as const;
-
-// Maximum values
-export const MAX_VALUES = {
-  maxUint256: 2n ** 256n - 1n,
-  maxUint128: 2n ** 128n - 1n,
-  maxUint64: 2n ** 64n - 1n,
-} as const;
-
-// Basis points conversion
-export const BPS = {
-  ONE: 10000n,
-  DECIMAL: 10000,
+  openLoopSameAsset: 650_000,
+  openLoopCrossAsset: 900_000,
+  closeLoopSameAsset: 700_000,
+  closeLoopCrossAsset: 950_000,
 } as const;

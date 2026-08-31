@@ -1,2 +1,9 @@
 .secrets/
 github_tokens.env
+.env
+node_modules/
+dist/
+data/
+cache/
+out/
+broadcast/
