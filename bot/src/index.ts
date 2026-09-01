@@ -279,7 +279,7 @@ export class LoopingBot {
       marginAmount: best.marginAmount,
       leverage: best.leverage,
       marginUsd,
-      openTxGasUsed: approve.gasUsed ?? 0n,
+      openTxGasUsed: (approve.gasUsed ?? 0n) + (sent.gasUsed ?? 0n),
       openTxHash: sent.hash,
       openedAt: Date.now(),
       riskId: position.id,
