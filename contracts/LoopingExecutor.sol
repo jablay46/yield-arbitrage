@@ -23,6 +23,9 @@ import {IAaveOracle} from "./interfaces/IAaveOracle.sol";
  *         Supported leverage: 2x, 3x, 5x. The post-open health factor is
  *         enforced on-chain; 5x typically requires correlated-asset e-mode
  *         or a high liquidation threshold.
+ *
+ *         Fee-on-transfer (deflationary) tokens are not supported: the open
+ *         path assumes transferFrom delivers exactly marginAmount.
  */
 contract LoopingExecutor is FlashloanBase {
     using SafeERC20 for IERC20;
@@ -61,6 +64,7 @@ contract LoopingExecutor is FlashloanBase {
     error SwapTokenMismatch(address expected, address actual);
     error SwapExcessPulled(uint256 pulled, uint256 expected);
     error CannotWithdrawActiveAsset(address token);
+    error PositionStillActive(uint256 debt);
 
     enum Mode {
         Open,
@@ -121,6 +125,8 @@ contract LoopingExecutor is FlashloanBase {
     event MinHealthFactorUpdated(uint256 newMinHealthFactor);
     event CriticalHealthFactorUpdated(uint256 newCriticalHealthFactor);
     event SwapRouterUpdated(address newRouter);
+    event OracleUpdated(address newOracle);
+    event PositionReset(address collateralAsset, address borrowAsset);
 
     constructor(
         address _morpho,
@@ -129,6 +135,9 @@ contract LoopingExecutor is FlashloanBase {
         address _swapRouter,
         address _oracle
     ) FlashloanBase(_morpho, _aavePool) {
+        // _lendingPool and _aavePool are usually the same Aave V3 pool, but
+        // are kept as separate parameters so the flashloan fallback source can
+        // be repointed independently of the pool the loop borrows from.
         if (_lendingPool == address(0)) revert ZeroAddress();
         if (_swapRouter == address(0)) revert ZeroAddress();
         if (_oracle == address(0)) revert ZeroAddress();
@@ -621,6 +630,39 @@ contract LoopingExecutor is FlashloanBase {
         emit SwapRouterUpdated(_swapRouter);
     }
 
+    /// @notice Update the Aave price oracle used for cross-asset flashloan
+    ///         sizing and the keeper slippage floor. Deliberately not
+    ///         pausable, so a stale or compromised oracle can always be
+    ///         replaced while the rest of the contract is frozen.
+    function setOracle(address _oracle) external onlyOwner {
+        if (_oracle == address(0)) revert ZeroAddress();
+        oracle = IAaveOracle(_oracle);
+        emit OracleUpdated(_oracle);
+    }
+
+    /**
+     * @notice Clear a stale open-position flag when no debt remains.
+     * @dev Escape hatch for a position that was fully liquidated (or repaid)
+     *      out-of-band: closeLoop reverts on zero debt and keeperDeleverage
+     *      reverts on a healthy HF, so without this the contract could never
+     *      open again. Only callable once the variable debt is actually zero;
+     *      any residual aToken collateral can then be rescued via
+     *      emergencyWithdraw.
+     */
+    function resetPosition() external onlyOwner {
+        if (!positionOpen) revert NoOpenPosition();
+        OpenPosition memory stored = openPosition;
+        ReserveData memory rd = lendingPool.getReserveData(stored.borrowAsset);
+        uint256 debt = IERC20(rd.variableDebtTokenAddress).balanceOf(
+            address(this)
+        );
+        if (debt != 0) revert PositionStillActive(debt);
+
+        positionOpen = false;
+        delete openPosition;
+        emit PositionReset(stored.collateralAsset, stored.borrowAsset);
+    }
+
     /**
      * @notice Update the minimum health factor required after opening a loop
      * @param _minHealthFactor The new minimum health factor in WAD units (e.g., 1.05e18)
@@ -652,14 +694,22 @@ contract LoopingExecutor is FlashloanBase {
 
     /**
      * @notice Rescue tokens stuck on the contract.
-     * @dev Forbids withdrawing the collateral or borrow asset of an open loop,
-     *      which would leave the position under-collateralized and un-closeable
-     *      via the normal flashloan unwind.
+     * @dev Forbids withdrawing the collateral or borrow asset of an open loop —
+     *      including the aToken minted against the supplied collateral, which
+     *      backs the position just as directly — since removing any of them
+     *      would leave the position under-collateralized and un-closeable via
+     *      the normal flashloan unwind.
      */
     function emergencyWithdraw(address token, uint256 amount) external override onlyOwner {
         if (positionOpen) {
             OpenPosition memory stored = openPosition;
             if (token == stored.collateralAsset || token == stored.borrowAsset) {
+                revert CannotWithdrawActiveAsset(token);
+            }
+            ReserveData memory rd = lendingPool.getReserveData(
+                stored.collateralAsset
+            );
+            if (token == rd.aTokenAddress) {
                 revert CannotWithdrawActiveAsset(token);
             }
         }

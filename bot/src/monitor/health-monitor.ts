@@ -100,6 +100,36 @@ export class HealthMonitor {
   }
 
   /**
+   * Read the executor's on-chain keeper trigger. This is configured
+   * independently of the bot's own critical threshold, so the paused
+   * deleverage path must consult it before calling keeperDeleverage.
+   * @returns The contract's criticalHealthFactor (WAD)
+   */
+  async getCriticalHealthFactor(): Promise<bigint> {
+    return this.client.readContract({
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'criticalHealthFactor',
+    });
+  }
+
+  /**
+   * Read the executor's active Aave e-mode category (0 = none). Queried from
+   * the pool rather than tracked locally, so e-mode cleanup does not depend
+   * on persisted bot state surviving a crash.
+   * @returns The active e-mode category id
+   */
+  async getUserEMode(): Promise<number> {
+    const category = await this.client.readContract({
+      address: ADDRESSES.aavePool as Address,
+      abi: aavePoolAbi,
+      functionName: 'getUserEMode',
+      args: [this.executor],
+    });
+    return Number(category);
+  }
+
+  /**
    * Retrieve the collateral and borrow assets of the currently open position.
    * @returns Object containing collateral and borrow asset addresses
    */

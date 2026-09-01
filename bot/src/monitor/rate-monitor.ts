@@ -64,9 +64,14 @@ export function rayRateToAprBps(rateRay: bigint): number {
  * watchlist, using batched multicalls.
  */
 export class RateMonitor {
+  /** E-mode category config changes rarely (governance), but a stale read
+   *  must not persist for the whole process lifetime — refresh hourly. */
+  private static readonly EMODE_CACHE_TTL_MS = 3_600_000;
+
   private client: BasePublicClient;
   private watchlist: Address[];
   private eModeCategory?: Promise<EModeCategoryData>;
+  private eModeCachedAt = 0;
   /** Cached oracle price (USD, 8 decimals) keyed by asset address (lowercase). */
   private priceCache = new Map<string, { price: number; ts: number }>();
   /** Cache TTL in ms; 0 disables caching. */
@@ -89,7 +94,11 @@ export class RateMonitor {
    * @returns The e-mode category configuration with LTV and liquidation threshold
    */
   async getEModeCategoryData(): Promise<EModeCategoryData> {
-    if (!this.eModeCategory) {
+    if (
+      !this.eModeCategory ||
+      Date.now() - this.eModeCachedAt > RateMonitor.EMODE_CACHE_TTL_MS
+    ) {
+      this.eModeCachedAt = Date.now();
       this.eModeCategory = this.client
         .readContract({
           address: ADDRESSES.aavePool as Address,
