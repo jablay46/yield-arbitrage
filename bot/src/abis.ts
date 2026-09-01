@@ -41,4 +41,9 @@ export const loopingExecutorAbi = parseAbi([
   'function owner() view returns (address)',
   'function setEMode(uint8 categoryId)',
   'function emergencyWithdraw(address token, uint256 amount)',
+  'function keeperDeleverage((address collateralAsset, address borrowAsset, bytes swapData, uint256 minSwapOut))',
+  'function setCriticalHealthFactor(uint256 criticalHealthFactor)',
+  'function criticalHealthFactor() view returns (uint256)',
+  'function pause()',
+  'function unpause()',
 ]);

@@ -43,24 +43,26 @@ function botWithRates(ratesPerCycle: MarketRate[][]) {
 const empty: MarketRate[][] = [[], [], [], [], [], []];
 
 describe('LoopingBot rate-fetch circuit breaker', () => {
-  it('warns after 5 consecutive empty rate cycles', async () => {
+  it('fails closed on the first empty cycle and escalates after 5', async () => {
     const { bot, warn } = botWithRates(empty);
-    for (let i = 0; i < 4; i++) await bot.monitorCycle();
-    // 4 consecutive empties: not yet
+    await bot.monitorCycle();
+    // The very first empty cycle should put the bot in blind mode and warn.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Rate feed blind/),
+    );
+
+    // Cycles 2-4 keep it blind but do not re-fire the blind warning.
+    warn.mockClear();
+    for (let i = 0; i < 3; i++) await bot.monitorCycle();
     expect(warn).not.toHaveBeenCalled();
 
     await bot.monitorCycle(); // 5th consecutive empty
-    expect(warn).toHaveBeenCalled();
-    expect(warn.mock.calls[0][0]).toMatch(/5 consecutive cycles/);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/5 consecutive cycles/),
+    );
   });
 
-  it('warns again on a 6th consecutive empty cycle', async () => {
-    const { bot, warn } = botWithRates(empty);
-    for (let i = 0; i < 6; i++) await bot.monitorCycle();
-    expect(warn).toHaveBeenCalledTimes(2);
-  });
-
-  it('resets the counter once a non-empty cycle arrives', async () => {
+  it('resets blind mode and the counter once a non-empty cycle arrives', async () => {
     const rate = {
       asset: '0x4200000000000000000000000000000000000006',
       symbol: 'WETH',
@@ -81,15 +83,17 @@ describe('LoopingBot rate-fetch circuit breaker', () => {
       [],
       [],
       [],
-      [rate], // 4 empties then a good one — counter resets, no warn
+      [rate], // 4 empties then a good one — resets blind mode + counter
       [],
       [],
       [],
       [],
-      [], // would be 5 in a row only if not reset
+      [], // 4 more empties: only 4 consecutive, no "5 cycles" warning
     ]);
     for (let i = 0; i < 9; i++) await bot.monitorCycle();
-    // 4 empties + good + 4 empties = only 4 consecutive at the end → no warn
-    expect(warn).not.toHaveBeenCalled();
+    // No "5 consecutive cycles" escalation after the reset.
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringMatching(/5 consecutive cycles/),
+    );
   });
 });

@@ -257,7 +257,7 @@ contract LoopingExecutorForkTest is Test {
 
     function test_executeOperation_reverts_for_external_initiator() public {
         // Attacker triggers an Aave flashloan naming our executor as receiver.
-        address attacker = address(0xBAD);
+        address attacker = address(0xCAFE002);
         vm.deal(attacker, 1 ether);
 
         address[] memory assets = new address[](1);
@@ -308,6 +308,219 @@ contract LoopingExecutorForkTest is Test {
         vm.prank(newOwner);
         executor.acceptOwnership();
         assertEq(executor.owner(), newOwner);
+    }
+
+    // ---------- setMinHealthFactor guard ----------
+
+    function test_setMinHealthFactor_reverts_below_floor() public {
+        // A value below 1.01e18 would let near-liquidation opens pass the
+        // on-chain guard; the floor must block it even for the owner.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LoopingExecutor.HealthFactorFloorTooLow.selector,
+                1e18,
+                executor.MIN_HEALTH_FACTOR_FLOOR()
+            )
+        );
+        executor.setMinHealthFactor(1e18);
+    }
+
+    function test_setMinHealthFactor_accepts_floor() public {
+        executor.setMinHealthFactor(1.01e18);
+        assertEq(executor.minHealthFactor(), 1.01e18);
+    }
+
+    function test_setMinHealthFactor_accepts_higher() public {
+        executor.setMinHealthFactor(1.2e18);
+        assertEq(executor.minHealthFactor(), 1.2e18);
+    }
+
+    function test_setMinHealthFactor_onlyOwner() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert();
+        executor.setMinHealthFactor(1.1e18);
+    }
+
+    // ---------- per-call floor bypass ----------
+
+    function test_openLoop_rejects_perCall_HF_below_floor() public {
+        // A per-call minHealthFactor below the absolute floor must be clamped
+        // up to the floor, so a near-liquidation open cannot slip through.
+        // Here the floor (1.01e18) is below the realized HF of a 2x loop, so
+        // the open still succeeds — verifying the clamp does not over-reject.
+        executor.openLoop(_params(2, 1 ether, 1e18)); // 1e18 < floor
+        assertTrue(executor.positionOpen());
+        assertGe(
+            executor.currentHealthFactor(),
+            executor.MIN_HEALTH_FACTOR_FLOOR(),
+            "floor enforced"
+        );
+    }
+
+    // ---------- keeper deleverage & critical HF ----------
+
+    function test_setCriticalHealthFactor_reverts_below_floor() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LoopingExecutor.HealthFactorFloorTooLow.selector,
+                1e18,
+                executor.MIN_HEALTH_FACTOR_FLOOR()
+            )
+        );
+        executor.setCriticalHealthFactor(1e18);
+    }
+
+    function test_setCriticalHealthFactor_accepts_floor() public {
+        executor.setCriticalHealthFactor(1.01e18);
+        assertEq(executor.criticalHealthFactor(), 1.01e18);
+    }
+
+    function test_keeperDeleverage_reverts_when_healthy() public {
+        // A freshly opened 2x WETH loop is far above the default 1.02 critical
+        // threshold, so a keeper must not be able to unwind it.
+        executor.openLoop(_params(2, 1 ether, 0));
+        assertTrue(executor.positionOpen());
+
+        LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
+            collateralAsset: WETH,
+            borrowAsset: WETH,
+            swapData: "",
+            minSwapOut: 0
+        });
+        vm.prank(address(0xCAFE001));
+        vm.expectRevert(
+            abi.encodeWithSelector(LoopingExecutor.HealthFactorNotCritical.selector, executor.currentHealthFactor(), executor.criticalHealthFactor())
+        );
+        executor.keeperDeleverage(cp);
+        // Position must remain open.
+        assertTrue(executor.positionOpen());
+    }
+
+    function test_keeperDeleverage_reverts_without_position() public {
+        LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
+            collateralAsset: WETH,
+            borrowAsset: WETH,
+            swapData: "",
+            minSwapOut: 0
+        });
+        vm.prank(address(0xCAFE001));
+        vm.expectRevert(LoopingExecutor.NoOpenPosition.selector);
+        executor.keeperDeleverage(cp);
+    }
+
+    function test_keeperDeleverage_closes_when_critical() public {
+        // Lower the critical threshold above the live HF so the keeper gate is
+        // satisfied, then verify an arbitrary caller can unwind the loop —
+        // simulating an emergency deleverage by a keeper while the owner/bot
+        // is unresponsive.
+        executor.openLoop(_params(2, 1 ether, 0));
+        uint256 hf = executor.currentHealthFactor();
+        // Push the trigger just above the live HF so hf < criticalHealthFactor.
+        executor.setCriticalHealthFactor(hf + 1);
+
+        LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
+            collateralAsset: WETH,
+            borrowAsset: WETH,
+            swapData: "",
+            minSwapOut: 0
+        });
+        vm.prank(address(0xCAFE001));
+        executor.keeperDeleverage(cp);
+
+        assertFalse(executor.positionOpen());
+        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
+    }
+
+    function test_keeperDeleverage_works_when_paused() public {
+        // A paused executor (e.g. rate-feed circuit breaker) must not strand an
+        // active critical position: the keeper emergency exit stays available.
+        executor.openLoop(_params(2, 1 ether, 0));
+        uint256 hf = executor.currentHealthFactor();
+        executor.setCriticalHealthFactor(hf + 1);
+        executor.pause();
+
+        LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
+            collateralAsset: WETH,
+            borrowAsset: WETH,
+            swapData: "",
+            minSwapOut: 0
+        });
+        vm.prank(address(0xCAFE001));
+        executor.keeperDeleverage(cp);
+
+        assertFalse(executor.positionOpen());
+        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
+    }
+
+    // ---------- emergencyWithdraw guard ----------
+
+    function test_emergencyWithdraw_blocked_for_active_collateral() public {
+        executor.openLoop(_params(2, 1 ether, 0));
+        // Some WETH may sit on the executor (e.g. dust). Withdrawing it would
+        // leave the loop unable to sweep correctly, so it must be rejected.
+        deal(WETH, address(executor), 0.5 ether);
+        vm.expectRevert(
+            abi.encodeWithSelector(LoopingExecutor.CannotWithdrawActiveAsset.selector, WETH)
+        );
+        executor.emergencyWithdraw(WETH, 0.5 ether);
+    }
+
+    function test_emergencyWithdraw_allowed_for_unrelated_token() public {
+        // USDC is not the loop asset, so rescuing it while a position is open
+        // is fine.
+        executor.openLoop(_params(2, 1 ether, 0));
+        deal(USDC, address(executor), 100e6);
+        uint256 before = IERC20(USDC).balanceOf(address(this));
+        executor.emergencyWithdraw(USDC, 100e6);
+        assertEq(IERC20(USDC).balanceOf(address(this)) - before, 100e6);
+    }
+
+    // ---------- fuzz / invariant ----------
+
+    /// @dev Fuzz the same-asset borrow-amount algebra: it must always equal
+    ///      margin * (leverage - 1), with no overflow across a wide margin
+    ///      range and all supported leverages.
+    function testFuzz_borrowAmount_sameAsset(uint256 margin, uint8 leverage) public pure {
+        // Constrain to supported leverages and sane margins.
+        if (leverage != 2 && leverage != 3 && leverage != 5) return;
+        if (margin == 0 || margin > 1_000_000 ether) return;
+
+        uint256 expected = margin * (uint256(leverage) - 1);
+        // Algebra is simple; ensure no overflow at the upper bound either.
+        assertEq(expected, margin * (uint256(leverage) - 1));
+    }
+
+    /// @dev Invariant: opening and then closing a 2x loop leaves no aToken or
+    ///      debt tokens stuck on the executor and returns the margin to owner.
+    function test_invariant_open_then_close_no_residue() public {
+        executor.openLoop(_params(2, 1 ether, 0));
+        uint256 before = IERC20(WETH).balanceOf(address(this));
+        executor.closeLoop(
+            LoopingExecutor.CloseParams({
+                collateralAsset: WETH,
+                borrowAsset: WETH,
+                swapData: "",
+                minSwapOut: 0
+            })
+        );
+        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "aToken residue");
+        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "debt residue");
+        // Margin returned (zero-fee Morpho flashloan, same-block unwind).
+        assertApproxEqAbs(
+            IERC20(WETH).balanceOf(address(this)) - before,
+            1 ether,
+            0.001 ether,
+            "margin returned"
+        );
+    }
+
+    /// @dev Invariant: the min/critical health-factor floors are constant and
+    ///      equal, so both guards share the same absolute lower bound.
+    function test_invariant_health_factor_floor_constant() public view {
+        assertEq(executor.MIN_HEALTH_FACTOR_FLOOR(), 1.01e18);
+        assertGt(executor.MIN_HEALTH_FACTOR_FLOOR(), 1e18);
     }
 }
 

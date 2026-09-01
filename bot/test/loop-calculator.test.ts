@@ -7,6 +7,7 @@ import {
   maxLeverageForLtv,
   leverageAllowed,
   liquidationBuffer,
+  minSwapOutFromOracle,
 } from '../src/strategy/loop-calculator';
 
 describe('loop-calculator', () => {
@@ -61,5 +62,34 @@ describe('loop-calculator', () => {
     const buffer = liquidationBuffer(2, 8250);
     // 1 - (1 / (2 * 0.825)) = 1 - 0.606 = 0.394 adverse move tolerated
     expect(buffer).toBeCloseTo(0.394, 3);
+  });
+
+  it('derives a slippage-guarded minSwapOut from oracle prices', () => {
+    // Swap 1 WETH (1e18, ~$2000) into USDC (1e6, ~$1).
+    // fairOut = 1e18 * 2000e8 / 1e8 = 2e21 -> /1e12 decimal adjust = 2e9 (2000 USDC).
+    // With 50 bps slippage: 2000e6 * 0.995 = 1990e6.
+    const minOut = minSwapOutFromOracle(
+      1_000_000_000_000_000_000n, // 1 WETH
+      200_000_000_000n, // $2000 in 1e8
+      100_000_000n, // $1 in 1e8
+      18, // WETH
+      6, // USDC
+      50, // 0.5%
+    );
+    expect(minOut).toBe(1_990_000_000n); // 1990 USDC
+  });
+
+  it('minSwapOut handles equal decimals', () => {
+    // 1000 units in -> out same decimals, 1% slippage -> 990
+    const minOut = minSwapOutFromOracle(1000n, 1n, 1n, 18, 18, 100);
+    expect(minOut).toBe(990n);
+  });
+
+  it('preserves fractional output when scaling up decimals (no truncation)', () => {
+    // One base unit of a 6-decimal $1 token into an 18-decimal $2000 token.
+    // fair = 1 * 1e8 / (2000e8) = 1/2000 = 0.0005; scaled up by 1e12 gives
+    // 5e8 wei. The old order divided first (0) then scaled -> 0 (understated).
+    const minOut = minSwapOutFromOracle(1n, 100_000_000n, 200_000_000_000n, 6, 18, 0);
+    expect(minOut).toBe(500_000_000n); // 0.0005 of the 18-decimal out token
   });
 });

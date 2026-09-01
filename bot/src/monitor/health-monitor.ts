@@ -87,6 +87,19 @@ export class HealthMonitor {
   }
 
   /**
+   * @returns Whether the executor contract is paused. The bot treats a pause
+   *          as fail-closed (no opens), but the keeper emergency exit remains
+   *          callable while paused so a critical position can still be wound down.
+   */
+  async isPaused(): Promise<boolean> {
+    return this.client.readContract({
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'paused',
+    });
+  }
+
+  /**
    * Retrieve the collateral and borrow assets of the currently open position.
    * @returns Object containing collateral and borrow asset addresses
    */
