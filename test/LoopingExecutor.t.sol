@@ -309,6 +309,37 @@ contract LoopingExecutorForkTest is Test {
         executor.acceptOwnership();
         assertEq(executor.owner(), newOwner);
     }
+
+    // ---------- setMinHealthFactor guard ----------
+
+    function test_setMinHealthFactor_reverts_below_floor() public {
+        // A value below 1.01e18 would let near-liquidation opens pass the
+        // on-chain guard; the floor must block it even for the owner.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LoopingExecutor.HealthFactorFloorTooLow.selector,
+                1e18,
+                executor.MIN_HEALTH_FACTOR_FLOOR()
+            )
+        );
+        executor.setMinHealthFactor(1e18);
+    }
+
+    function test_setMinHealthFactor_accepts_floor() public {
+        executor.setMinHealthFactor(1.01e18);
+        assertEq(executor.minHealthFactor(), 1.01e18);
+    }
+
+    function test_setMinHealthFactor_accepts_higher() public {
+        executor.setMinHealthFactor(1.2e18);
+        assertEq(executor.minHealthFactor(), 1.2e18);
+    }
+
+    function test_setMinHealthFactor_onlyOwner() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert();
+        executor.setMinHealthFactor(1.1e18);
+    }
 }
 
 contract LoopingExecutorHarness is LoopingExecutor {

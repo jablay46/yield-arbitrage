@@ -34,12 +34,18 @@ contract LoopingExecutor is FlashloanBase {
     ///      premium and interest accrued since the debt snapshot are covered.
     uint256 internal constant CLOSE_BUFFER_BPS = 10; // 0.1%
 
+    /// @dev Absolute lower bound enforceable via setMinHealthFactor, so a
+    ///      compromised or mistaken owner cannot weaken the guard to permit
+    ///      near-liquidation opens. WAD: 1.01e18 = 1.01.
+    uint256 public constant MIN_HEALTH_FACTOR_FLOOR = 1.01e18;
+
     error UnsupportedLeverage(uint8 leverage);
     error ZeroMargin();
     error PositionAlreadyOpen();
     error NoOpenPosition();
     error PositionMismatch();
     error HealthFactorTooLow(uint256 healthFactor, uint256 minimum);
+    error HealthFactorFloorTooLow(uint256 provided, uint256 minimum);
     error InsufficientToRepay(uint256 balance, uint256 required);
     error RouterNotSet();
     error SlippageExceeded(uint256 amountOut, uint256 minOut);
@@ -481,6 +487,9 @@ contract LoopingExecutor is FlashloanBase {
      * @param _minHealthFactor The new minimum health factor in WAD units (e.g., 1.05e18)
      */
     function setMinHealthFactor(uint256 _minHealthFactor) external onlyOwner {
+        if (_minHealthFactor < MIN_HEALTH_FACTOR_FLOOR) {
+            revert HealthFactorFloorTooLow(_minHealthFactor, MIN_HEALTH_FACTOR_FLOOR);
+        }
         minHealthFactor = _minHealthFactor;
         emit MinHealthFactorUpdated(_minHealthFactor);
     }
