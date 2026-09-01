@@ -25,13 +25,20 @@ jobs:
       - name: Compile
         run: forge build
 
-      # Fork tests read BASE_RPC_URL from secrets when available; otherwise
-      # they fall back to the public Base RPC (rate-limited, but functional
-      # for a small suite). FORK_BLOCK defaults to 50M in the test setUp.
+      # Fork tests default to the public Base RPC (https://mainnet.base.org)
+      # when BASE_RPC_URL is unset/empty; set the repo secret for rate-limit
+      # headroom. We only export it when the secret exists so the test's
+      # envOr fallback still works when the secret is absent (an empty
+      # string would otherwise override the fallback).
       - name: Run tests
         env:
           BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
-        run: forge test
+        run: |
+          if [ -z "$BASE_RPC_URL" ]; then
+            echo "BASE_RPC_URL secret not set; tests will use the public Base RPC fallback."
+            unset BASE_RPC_URL
+          fi
+          forge test
 
   bot:
     name: Bot (tsc + vitest)
