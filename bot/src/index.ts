@@ -277,10 +277,11 @@ export class LoopingBot {
     // Preflight: a high-leverage ETH-correlated loop needs the e-mode category
     // set on the executor before the open can borrow against the higher LT.
     // The bot applies it (category 1 = ETH-correlated) right before opening so
-    // the operator doesn't have to remember a manual setEMode.
-    if (best.needsEmode) {
-      await this.txBuilder.setEMode(EMODE.ETH_CORRELATED);
-    }
+    // the operator doesn't have to remember a manual setEMode. Its gas is a
+    // real on-chain cost, so it's folded into openTxGasUsed below.
+    const emode = best.needsEmode
+      ? await this.txBuilder.setEMode(EMODE.ETH_CORRELATED)
+      : undefined;
 
     const approve = await this.txBuilder.approveMargin(
       best.asset,
@@ -313,7 +314,10 @@ export class LoopingBot {
       marginAmount: best.marginAmount,
       leverage: best.leverage,
       marginUsd,
-      openTxGasUsed: (approve.gasUsed ?? 0n) + (sent.gasUsed ?? 0n),
+      openTxGasUsed:
+        (emode?.gasUsed ?? 0n) +
+        (approve.gasUsed ?? 0n) +
+        (sent.gasUsed ?? 0n),
       openTxHash: sent.hash,
       openedAt: Date.now(),
       riskId: position.id,

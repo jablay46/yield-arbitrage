@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: this workflow only needs to read the repo.
+permissions:
+  contents: read
+
 jobs:
   contracts:
     name: Contracts (forge)
@@ -13,6 +17,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          persist-credentials: false
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -25,20 +30,14 @@ jobs:
       - name: Compile
         run: forge build
 
-      # Fork tests default to the public Base RPC (https://mainnet.base.org)
-      # when BASE_RPC_URL is unset/empty; set the repo secret for rate-limit
-      # headroom. We only export it when the secret exists so the test's
-      # envOr fallback still works when the secret is absent (an empty
-      # string would otherwise override the fallback).
+      # Fork tests fall back to the public Base RPC (https://mainnet.base.org)
+      # when BASE_RPC_URL is unset; set the repo secret for rate-limit headroom.
+      # secrets.* expands to an empty string when absent, and forge's envOr
+      # treats an empty-but-set value as set, so we coalesce here instead.
       - name: Run tests
         env:
-          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
-        run: |
-          if [ -z "$BASE_RPC_URL" ]; then
-            echo "BASE_RPC_URL secret not set; tests will use the public Base RPC fallback."
-            unset BASE_RPC_URL
-          fi
-          forge test
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || vars.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: forge test
 
   bot:
     name: Bot (tsc + vitest)
@@ -48,11 +47,13 @@ jobs:
         working-directory: bot
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: npm
           cache-dependency-path: bot/package-lock.json
 

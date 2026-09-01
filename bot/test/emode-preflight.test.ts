@@ -32,6 +32,7 @@ const emodeCandidate: LoopCandidate = {
 
 type StubbedBot = {
   running: boolean;
+  openPosition?: { openTxGasUsed: bigint };
   riskEngine: {
     getOpenPositions: () => unknown[];
     canOpen: () => { allowed: boolean; reason?: string };
@@ -92,6 +93,12 @@ describe('LoopingBot e-mode preflight', () => {
     expect(openLoop).toHaveBeenCalledOnce();
     expect(setEMode.mock.invocationCallOrder[0]).toBeLessThan(
       approveMargin.mock.invocationCallOrder[0],
+    );
+
+    // The e-mode tx gas is a real on-chain cost and must be folded into the
+    // recorded openTxGasUsed so realized PnL isn't overstated.
+    expect(bot.openPosition?.openTxGasUsed).toBe(
+      50_000n + 50_000n + 500_000n,
     );
   });
 

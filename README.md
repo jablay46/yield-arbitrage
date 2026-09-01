@@ -68,9 +68,11 @@ cp ../.env.example ../.env  # configure, keep DRY_RUN=true to monitor only
 npm start
 ```
 
-Every live send is pre-simulated with `simulateContract`; a failing simulation
-never reaches the mempool. When a candidate needs ETH-correlated e-mode (5x),
-the bot sets e-mode category 1 on the executor before opening.
+Every loop-management send (`openLoop`, `closeLoop`, `setEMode`) is
+pre-simulated with `simulateContract`; a failing simulation never reaches the
+mempool. Margin-token approvals are sent directly. When a candidate needs
+ETH-correlated e-mode (5x), the bot sets e-mode category 1 on the executor
+before opening.
 
 ### Configuration
 
