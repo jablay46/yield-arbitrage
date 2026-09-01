@@ -55,6 +55,7 @@ export class LoopingBot {
   private running = false;
   private monitorCycleInFlight = false;
   private healthCycleInFlight = false;
+  private consecutiveEmptyRateCycles = 0;
   private timers: NodeJS.Timeout[] = [];
 
   constructor(config: BotConfig) {
@@ -180,6 +181,22 @@ export class LoopingBot {
         this.rateMonitor.getAllRates(),
         this.rateMonitor.getEModeCategoryData(),
       ]);
+
+      // Circuit breaker: rate fetches can return an empty array when the
+      // Aave data provider consistently fails (address mismatch, contract
+      // paused, RPC issue). Alert the operator after 5 consecutive empty
+      // cycles so a silent stall in live mode is noticed.
+      if (rates.length === 0) {
+        this.consecutiveEmptyRateCycles++;
+        if (this.consecutiveEmptyRateCycles >= 5) {
+          this.logger.warn(
+            `Rate fetch returned no assets for ${this.consecutiveEmptyRateCycles} consecutive cycles — check Aave data provider / RPC`,
+          );
+        }
+      } else {
+        this.consecutiveEmptyRateCycles = 0;
+      }
+
       const candidates = findLoopCandidates(
         rates,
         this.config.marginAmount,

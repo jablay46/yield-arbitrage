@@ -113,10 +113,17 @@ At 0.01 gwei Base fees both are well under $0.01.
   negative). The bot ranks candidates by live rates — check the net APY.
 - **Liquidation**: HF falls when debt grows faster than collateral yield.
   5x leverage is only possible in e-mode (LT 90%) and is risky: HF 1.125 at open.
+  Health checks occur every `HEALTH_CHECK_INTERVAL_MS` (default 60s); a fast
+  collateral-price crash between reads can still reach liquidation before the
+  next poll, so lower the interval (at higher RPC cost) or use a custom oracle
+  for volatile pairs.
 - **Cross-asset loops** add price risk — the swap callback enforces atomic
   solvency (`minSwapOut`, debt must be coverable at execution price). The
   swap router is a trusted, owner-set component: a malicious router could
   reenter the flashloan callback. Only use a router you fully control.
+  Emergency closes from a low health factor pass `minSwapOut = 0`, so
+  cross-asset positions have no slippage guard on the unwind swap; prefer
+  same-asset loops where the close needs no swap.
 - **Operator mistake**: only the executor owner can open/close; keep the key
   cold. 3-of-5 multisig setup is strongly recommended (unimplemented yet).
 - **PnL is an estimate**: realized PnL is derived from the net APY at open
