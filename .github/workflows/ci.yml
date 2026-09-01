@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contracts:
+    name: Contracts (forge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Show forge version
+        run: forge --version
+
+      - name: Compile
+        run: forge build
+
+      # Fork tests read BASE_RPC_URL from secrets when available; otherwise
+      # they fall back to the public Base RPC (rate-limited, but functional
+      # for a small suite). FORK_BLOCK defaults to 50M in the test setUp.
+      - name: Run tests
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL }}
+        run: forge test
+
+  bot:
+    name: Bot (tsc + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type-check & build
+        run: npm run build
+
+      - name: Test
+        run: npm test
