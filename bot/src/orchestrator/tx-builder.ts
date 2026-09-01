@@ -158,6 +158,27 @@ export class TransactionBuilder {
   }
 
   /**
+   * Set the Aave e-mode category on the executor (e.g. 1 for ETH-correlated
+   * assets) so a high-leverage loop can borrow against the higher LT. Only
+   * the owner may call setEMode; a failed simulation never reaches the
+   * mempool.
+   * @param categoryId - Aave e-mode category id (0 disables)
+   * @returns Transaction hash and gas used
+   */
+  async setEMode(categoryId: number): Promise<SentTx> {
+    this.logger.info(`Setting e-mode category ${categoryId} on executor`);
+    const call = {
+      account: this.account,
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'setEMode',
+      args: [categoryId],
+    } as const;
+
+    return this.simulateAndSend(call as never);
+  }
+
+  /**
    * Simulate a contract call, estimate gas, and send the transaction.
    * Simulation occurs against the pending block; a revert here means the tx
    * would fail on-chain and it never reaches the mempool. The simulation's
@@ -169,7 +190,7 @@ export class TransactionBuilder {
     account: Account;
     address: Address;
     abi: typeof loopingExecutorAbi;
-    functionName: 'openLoop' | 'closeLoop';
+    functionName: 'openLoop' | 'closeLoop' | 'setEMode';
     args: readonly unknown[];
   }): Promise<SentTx> {
     // Simulate against the "pending" block — on Base that resolves to the

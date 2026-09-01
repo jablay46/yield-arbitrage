@@ -62,14 +62,15 @@ opt in.
 ```bash
 cd bot
 npm install
-npm test              # unit tests (57)
+npm test              # unit tests (60)
 npm run build
 cp ../.env.example ../.env  # configure, keep DRY_RUN=true to monitor only
 npm start
 ```
 
 Every live send is pre-simulated with `simulateContract`; a failing simulation
-never reaches the mempool.
+never reaches the mempool. When a candidate needs ETH-correlated e-mode (5x),
+the bot sets e-mode category 1 on the executor before opening.
 
 ### Configuration
 
@@ -92,10 +93,12 @@ never reaches the mempool.
 ## Test status
 
 - Fork suite (real Base mainnet state): **19/19 passing** — pinned to
-  `evm_version = "prague"` so Aave's recent-block opcodes activate.
-- Bot unit tests: **57/57 passing** — `npm test`
-- E2E (anvil fork of Base): full cycle approve → openLoop 2x → closeLoop —
-  margin returned in one tx
+  `evm_version = "prague"` so Aave's recent-block opcodes activate. Runs at
+  the pinned `FORK_BLOCK=50000000` and at the latest block.
+- Bot unit tests: **60/60 passing** — `npm test`
+- E2E (anvil fork of Base): the `forge test` suite covers the full cycle
+  approve → openLoop 2x → closeLoop (see `test_closeLoop_returns_margin`); no
+  standalone anvil script is shipped.
 
 ## Gas snapshot (Base mainnet fork)
 

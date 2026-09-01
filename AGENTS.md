@@ -11,14 +11,13 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 ## Build / test commands
 
 - `forge build` — compiles contracts (warnings are lint notes, not errors).
-- `forge test --match-path test/RateMathFuzz.t.sol` — pure math fuzz tests, no RPC needed.
-- `forge test` — full suite incl. Base fork tests. Fork tests require `BASE_RPC_URL` / `FORK_BLOCK`.
-- `cd bot && npm run build && npm test` — bot type-check + 42 unit tests.
+- `forge test` — full Base fork suite (19/19). Needs `BASE_RPC_URL`; `FORK_BLOCK` is optional (defaults to 50M). Tests pass at the pinned block and at the latest block.
+- `cd bot && npm run build && npm test` — bot type-check + 60 unit tests.
 
 ## Known test caveats
 
-- `test_openLoop_2x_aave_source` fails on the default `FORK_BLOCK=50000000` because the Aave V3 Pool implementation at that height uses opcodes the local EVM spec does not activate (`NotActivated` halt on the Aave flashloan path). At older blocks (e.g. 30M) the opcode path works but the `assertApproxEqAbs(..., 2)` collateral assertion is too tight for supply rounding. This is a fork-block/assertion-sensitivity issue, not a code bug.
-- Morpho-sourced loop tests (2x/3x/5x e-mode) pass on the default fork block.
+- The suite is **green**: `forge test` 19/19 and bot `npm test` 60/60, both at the pinned `FORK_BLOCK=50000000` and at the latest Base block. Earlier notes about `test_openLoop_2x_aave_source` failing are obsolete — pinning `evm_version = "prague"` (in `foundry.toml`) activates the opcodes the Aave Pool uses, and the Aave-source path now passes.
+- `FORK_BLOCK` is optional: omit it to fork latest, or set it for reproducibility. Both modes pass.
 
 ## Architecture pointers
 
@@ -26,7 +25,8 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 - `contracts/security/SecurityUtils.sol` — two-step ownership (`Ownable2Step`), `ReentrancyGuard`, `Pausable`. `renounceOwnership` clears `pendingOwner`; `transferOwnership(address(0))` cancels a pending transfer.
 - `bot/src/strategy/find-candidates.ts` — ranks loop candidates; liquidity is checked per leverage level, not only at 5x.
 - `bot/src/monitor/rate-monitor.ts` — multicalls reserve + config + aToken balanceOf + variableDebtToken totalSupply; `utilizationBps` derived from debt/(debt+liquidity).
-- `bot/src/orchestrator/tx-builder.ts` — simulates then sends using the simulation `request` and `estimateContractGas` + `applyGasBuffer`.
+- `bot/src/orchestrator/tx-builder.ts` — simulates then sends using the simulation `request` and `estimateContractGas` + `applyGasBuffer`. Exposes `setEMode` for the e-mode preflight.
+- `bot/src/index.ts` `maybeOpen` — e-mode preflight: when the best candidate needs ETH-correlated e-mode (5x), the bot calls `setEMode(1)` on the executor before approve/open, so the operator doesn't have to remember a manual step.
 
 ## Style
 
