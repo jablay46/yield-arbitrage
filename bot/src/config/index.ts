@@ -48,7 +48,7 @@ export const BotConfigSchema = z.object({
 
   /** TTL for the cached oracle price, in ms. Avoids a fresh getAssetPrice
    *  RPC every cycle when autoTrade is polling for an open. */
-  priceCacheTtlMs: z.number().default(30_000),
+  priceCacheTtlMs: z.number().finite().nonnegative().default(30_000),
 
   // Gas
   maxGasPriceGwei: z.number().default(50),
