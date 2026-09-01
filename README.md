@@ -32,7 +32,7 @@ Unwinding (`closeLoop`) is flashloan-powered and returns the margin in one tx.
 foundryup            # install forge
 forge install        # fetch dependencies (git submodules in lib/)
 forge build
-forge test --fork-url https://mainnet.base.org   # 16/16 — real Base state
+forge test --fork-url https://mainnet.base.org   # 19/19 — real Base state
 ```
 
 ## Deployment
@@ -62,7 +62,7 @@ opt in.
 ```bash
 cd bot
 npm install
-npm test              # unit tests (52)
+npm test              # unit tests (57)
 npm run build
 cp ../.env.example ../.env  # configure, keep DRY_RUN=true to monitor only
 npm start
@@ -91,9 +91,9 @@ never reaches the mempool.
 
 ## Test status
 
-- Fork suite (real Base mainnet state): **18/18 passing** — pinned to
+- Fork suite (real Base mainnet state): **19/19 passing** — pinned to
   `evm_version = "prague"` so Aave's recent-block opcodes activate.
-- Bot unit tests: **52/52 passing** — `npm test`
+- Bot unit tests: **57/57 passing** — `npm test`
 - E2E (anvil fork of Base): full cycle approve → openLoop 2x → closeLoop —
   margin returned in one tx
 

@@ -311,57 +311,69 @@ export class LoopingBot {
           return;
         }
 
-        const closeAsset = openPos?.asset ?? this.config.marginAsset;
+        const { collateralAsset, borrowAsset } = openPos
+          ? { collateralAsset: openPos.asset, borrowAsset: openPos.asset }
+          : await this.healthMonitor.getOpenPositionAssets();
         const sent = await this.txBuilder.closeLoop({
-          collateralAsset: closeAsset,
-          borrowAsset: closeAsset,
+          collateralAsset,
+          borrowAsset,
           swapData: '0x',
           minSwapOut: 0n,
         });
+
+        if (openPos) {
+          this.riskEngine.recordClose(openPos.riskId, sent.hash);
+        }
+        this.openPosition = undefined;
+        const closedAt = Date.now();
+        this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
 
         // Realized PnL: estimate accrued yield from the net APY at open over
         // the hold duration, minus gas spent on open + close. This is an
         // on-rate estimate (the margin itself is returned intact for a
         // same-asset unwind), not a balance-delta measurement.
-        const closedAt = Date.now();
         if (openPos) {
-          const netApyBpsAtOpen =
-            this.riskEngine.getOpenPositions()[0]?.netApyBpsAtOpen ?? 0;
-          const closeGasUsed = sent.gasUsed ?? 0n;
-          const gasWei = openPos.openTxGasUsed + closeGasUsed;
+          try {
+            const netApyBpsAtOpen =
+              this.riskEngine
+                .getAllPositions()
+                .find((p) => p.id === openPos.riskId)?.netApyBpsAtOpen ?? 0;
+            const closeGasUsed = sent.gasUsed ?? 0n;
+            const gasWei = openPos.openTxGasUsed + closeGasUsed;
 
-          const [priceUsd, fees] = await Promise.all([
-            this.rateMonitor.getAssetPriceUsd(closeAsset),
-            this.gasStrategy.getFees(),
-          ]);
+            const [priceUsd, fees] = await Promise.all([
+              this.rateMonitor.getAssetPriceUsd(collateralAsset),
+              this.gasStrategy.getFees(),
+            ]);
 
-          const pnl = estimateRealizedPnL({
-            marginUsd: openPos.marginUsd,
-            netApyBpsAtOpen,
-            holdMs: closedAt - openPos.openedAt,
-            gasWei,
-            maxFeePerGas: fees.maxFeePerGas,
-            gasAssetPriceUsd: priceUsd,
-          });
+            const pnl = estimateRealizedPnL({
+              marginUsd: openPos.marginUsd,
+              netApyBpsAtOpen,
+              holdMs: closedAt - openPos.openedAt,
+              gasWei,
+              maxFeePerGas: fees.maxFeePerGas,
+              gasAssetPriceUsd: priceUsd,
+            });
 
-          this.riskEngine.recordClose(openPos.riskId, sent.hash, pnl.netPnlUsd);
-          this.pnlTracker.record({
-            id: openPos.riskId,
-            openedAt: openPos.openedAt,
-            closedAt,
-            asset: openPos.symbol,
-            leverage: openPos.leverage,
-            marginUsd: openPos.marginUsd,
-            durationHours: pnl.durationHours,
-            grossYieldUsd: pnl.grossYieldUsd,
-            gasCostUsd: pnl.gasCostUsd,
-            netPnlUsd: pnl.netPnlUsd,
-            openTxHash: openPos.openTxHash,
-            closeTxHash: sent.hash,
-          });
+            this.riskEngine.recordRealizedPnl(openPos.riskId, pnl.netPnlUsd);
+            this.pnlTracker.record({
+              id: openPos.riskId,
+              openedAt: openPos.openedAt,
+              closedAt,
+              asset: openPos.symbol,
+              leverage: openPos.leverage,
+              marginUsd: openPos.marginUsd,
+              durationHours: pnl.durationHours,
+              grossYieldUsd: pnl.grossYieldUsd,
+              gasCostUsd: pnl.gasCostUsd,
+              netPnlUsd: pnl.netPnlUsd,
+              openTxHash: openPos.openTxHash,
+              closeTxHash: sent.hash,
+            });
+          } catch (error) {
+            this.logger.error(`Closed-loop PnL enrichment failed: ${error}`);
+          }
         }
-        this.openPosition = undefined;
-        this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
       }
     } catch (error) {
       this.logger.error(`Health cycle failed: ${error}`);

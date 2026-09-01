@@ -69,6 +69,18 @@ export class HealthMonitor {
     });
   }
 
+  async getOpenPositionAssets(): Promise<{
+    collateralAsset: Address;
+    borrowAsset: Address;
+  }> {
+    const [collateralAsset, borrowAsset] = await this.client.readContract({
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'openPosition',
+    });
+    return { collateralAsset, borrowAsset };
+  }
+
   classify(s: HealthSnapshot): HealthAction {
     // No debt -> HF is type(uint256).max, always fine
     if (s.totalDebtBase === 0n) return 'ok';

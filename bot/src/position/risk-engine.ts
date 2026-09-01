@@ -124,6 +124,11 @@ export class RiskEngine {
     this.lastActionAt = Date.now();
   }
 
+  recordRealizedPnl(positionId: string, realizedPnlUsd: number): void {
+    const position = this.positions.find((p) => p.id === positionId);
+    if (position) position.realizedPnlUsd = realizedPnlUsd;
+  }
+
   getOpenPositions(): LoopPosition[] {
     return this.positions.filter((p) => p.status === 'open');
   }
