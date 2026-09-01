@@ -24,8 +24,10 @@ export interface OpenPositionInfo {
   leverage: number;
   /** USD value of the margin at open time (Aave oracle). */
   marginUsd: number;
-  /** Gas used by the approve+open transactions, in wei units. */
+  /** Gas used by the approve+open transactions, in gas units (receipt.gasUsed). */
   openTxGasUsed: bigint;
+  /** Whether the e-mode preflight was applied at open (reset after close). */
+  emodeApplied: boolean;
   openTxHash: Hex;
   /** Epoch ms when the open tx confirmed. */
   openedAt: number;
@@ -399,6 +401,7 @@ export class LoopingBot {
       openedAt: Date.now(),
       riskId: position.id,
       decimals: best.decimals,
+      emodeApplied: best.needsEmode,
     };
     this.positionStore.set(this.openPosition);
     this.logger.info(
@@ -430,12 +433,20 @@ export class LoopingBot {
         const { collateralAsset, borrowAsset } = openPos
           ? { collateralAsset: openPos.asset, borrowAsset: openPos.asset }
           : await this.healthMonitor.getOpenPositionAssets();
-        const sent = await this.txBuilder.closeLoop({
+        const closeReq = {
           collateralAsset,
           borrowAsset,
-          swapData: '0x',
+          swapData: '0x' as const,
           minSwapOut: 0n,
-        });
+        };
+        // closeLoop is blocked while the executor is paused (e.g. by the
+        // rate-feed circuit breaker) — exactly when a critical position most
+        // needs unwinding. Fall back to keeperDeleverage, which the contract
+        // deliberately keeps callable while paused.
+        const paused = await this.healthMonitor.isPaused();
+        const sent = paused
+          ? await this.txBuilder.keeperDeleverage(closeReq)
+          : await this.txBuilder.closeLoop(closeReq);
 
         if (openPos) {
           this.riskEngine.recordClose(openPos.riskId, sent.hash);
@@ -444,6 +455,17 @@ export class LoopingBot {
         this.positionStore.clear();
         const closedAt = Date.now();
         this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
+
+        // Leave e-mode the way we found it: while the ETH-correlated category
+        // stays active, borrowing any non-category asset reverts, which would
+        // block the next non-ETH open until a manual reset.
+        if (openPos?.emodeApplied) {
+          try {
+            await this.txBuilder.setEMode(EMODE.NONE);
+          } catch (error) {
+            this.logger.error(`E-mode reset after close failed: ${error}`);
+          }
+        }
 
         // Realized PnL: estimate accrued yield from the net APY at open over
         // the hold duration, minus gas spent on open + close. This is an

@@ -12,8 +12,6 @@ export interface GasFees {
   maxPriorityFeePerGas: bigint;
 }
 
-const GWEI = 10n ** 9n;
-
 /**
  * EIP-1559 gas pricing for Base with a hard cap.
  */
@@ -106,29 +104,5 @@ export class GasStrategy {
    */
   maxFeeCap(): bigint {
     return BigInt(Math.round(this.config.maxGasPriceGwei * 1e9));
-  }
-
-  /**
-   * Check if the current gas price is favorable (less than half of max cap).
-   * @returns True if gas price is favorable for submitting transactions
-   */
-  async isGasFavorable(): Promise<boolean> {
-    const gasPrice = await this.client.getGasPrice();
-    return gasPrice < (BigInt(this.config.maxGasPriceGwei) * GWEI) / 2n;
-  }
-
-  /**
-   * Estimate the USD cost of a transaction given gas estimate and ETH price.
-   * @param gasEstimate - The gas estimate for the transaction
-   * @param ethPriceUsd - Current ETH price in USD
-   * @returns Estimated cost in USD
-   */
-  async estimateCostUsd(
-    gasEstimate: bigint,
-    ethPriceUsd: number
-  ): Promise<number> {
-    const fees = await this.getFees();
-    const costWei = gasEstimate * fees.maxFeePerGas;
-    return (Number(costWei) / 1e18) * ethPriceUsd;
   }
 }

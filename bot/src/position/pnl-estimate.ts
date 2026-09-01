@@ -17,9 +17,10 @@ export interface PnLEstimateInput {
   netApyBpsAtOpen: number;
   /** Hold duration in milliseconds. */
   holdMs: number;
-  /** Gas spent on open + close, in wei units (gas * fee). */
+  /** Gas spent on open + close, in gas units (receipt.gasUsed). */
   gasWei: bigint;
-  /** Effective max fee per gas used (wei). */
+  /** Max fee per gas from the tx (wei). This is an upper bound on the
+   *  effective gas price, so the gas cost is conservatively over-estimated. */
   maxFeePerGas: bigint;
   /** USD price of the gas-paying asset (ETH on Base). */
   gasAssetPriceUsd: number;

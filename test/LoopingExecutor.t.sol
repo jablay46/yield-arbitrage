@@ -7,6 +7,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {LoopingExecutor} from "contracts/LoopingExecutor.sol";
 import {FlashloanBase} from "contracts/FlashloanBase.sol";
+import {SecurityUtils} from "contracts/security/SecurityUtils.sol";
 import {IAaveOracle} from "contracts/interfaces/IAaveOracle.sol";
 import {ILendingPool, ReserveData} from "contracts/interfaces/ILendingPool.sol";
 
@@ -475,6 +476,103 @@ contract LoopingExecutorForkTest is Test {
         uint256 before = IERC20(USDC).balanceOf(address(this));
         executor.emergencyWithdraw(USDC, 100e6);
         assertEq(IERC20(USDC).balanceOf(address(this)) - before, 100e6);
+    }
+
+    function test_emergencyWithdraw_blocked_for_active_aToken() public {
+        // The aToken minted against the supplied collateral backs the open
+        // loop just as directly as the underlying — pulling it would strand
+        // the position, so it must be blocked too.
+        executor.openLoop(_params(2, 1 ether, 0));
+        uint256 aBal = IERC20(aWETH).balanceOf(address(executor));
+        assertGt(aBal, 0);
+        vm.expectRevert(
+            abi.encodeWithSelector(LoopingExecutor.CannotWithdrawActiveAsset.selector, aWETH)
+        );
+        executor.emergencyWithdraw(aWETH, aBal);
+    }
+
+    // ---------- resetPosition escape hatch ----------
+
+    function test_resetPosition_reverts_without_position() public {
+        vm.expectRevert(LoopingExecutor.NoOpenPosition.selector);
+        executor.resetPosition();
+    }
+
+    function test_resetPosition_reverts_with_active_debt() public {
+        executor.openLoop(_params(2, 1 ether, 0));
+        uint256 debt = executor.currentDebt(WETH);
+        assertGt(debt, 0);
+        vm.expectRevert(
+            abi.encodeWithSelector(LoopingExecutor.PositionStillActive.selector, debt)
+        );
+        executor.resetPosition();
+    }
+
+    function test_resetPosition_onlyOwner() public {
+        executor.openLoop(_params(2, 1 ether, 0));
+        vm.prank(address(0xBEEF));
+        vm.expectRevert();
+        executor.resetPosition();
+    }
+
+    function test_resetPosition_clears_flag_after_external_repay() public {
+        executor.openLoop(_params(2, 1 ether, 0));
+        assertTrue(executor.positionOpen());
+
+        // Simulate an out-of-band unwind (full liquidation or third-party
+        // repay): the debt is gone but positionOpen stays set. Without an
+        // escape hatch the contract is bricked — closeLoop reverts on zero
+        // debt, keeperDeleverage reverts on a healthy HF, openLoop reverts on
+        // the stale flag. Aave requires an explicit amount when repaying on
+        // behalf of another address (the max sentinel only works for self).
+        uint256 debt = executor.currentDebt(WETH);
+        IERC20(WETH).approve(AAVE_POOL, debt);
+        pool.repay(WETH, debt, 2, address(executor));
+        assertEq(executor.currentDebt(WETH), 0);
+
+        LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
+            collateralAsset: WETH,
+            borrowAsset: WETH,
+            swapData: "",
+            minSwapOut: 0
+        });
+        vm.expectRevert(LoopingExecutor.NoOpenPosition.selector);
+        executor.closeLoop(cp);
+        vm.expectRevert(); // HealthFactorNotCritical — HF is max with no debt
+        executor.keeperDeleverage(cp);
+        vm.expectRevert(LoopingExecutor.PositionAlreadyOpen.selector);
+        executor.openLoop(_params(2, 1 ether, 0));
+
+        executor.resetPosition();
+        assertFalse(executor.positionOpen());
+
+        // Residual aToken collateral becomes rescuable once the flag clears.
+        uint256 aBal = IERC20(aWETH).balanceOf(address(executor));
+        assertGt(aBal, 0);
+        executor.emergencyWithdraw(aWETH, aBal);
+
+        // And the contract can open again.
+        executor.openLoop(_params(2, 1 ether, 0));
+        assertTrue(executor.positionOpen());
+    }
+
+    // ---------- setOracle ----------
+
+    function test_setOracle() public {
+        address newOracle = address(0x1234);
+        executor.setOracle(newOracle);
+        assertEq(address(executor.oracle()), newOracle);
+    }
+
+    function test_setOracle_reverts_zero_address() public {
+        vm.expectRevert(SecurityUtils.ZeroAddress.selector);
+        executor.setOracle(address(0));
+    }
+
+    function test_setOracle_onlyOwner() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert();
+        executor.setOracle(address(0x1234));
     }
 
     // ---------- fuzz / invariant ----------

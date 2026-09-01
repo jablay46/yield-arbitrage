@@ -139,6 +139,36 @@ export class TransactionBuilder {
   }
 
   /**
+   * Simulate, build, and send a keeperDeleverage transaction. This is the
+   * emergency unwind path: callable by anyone once the on-chain health factor
+   * is below the contract's critical threshold, and — unlike closeLoop — it
+   * remains callable while the executor is paused, so a fail-closed pause
+   * cannot strand a critical position.
+   * @param req - Close parameters (must match the recorded open position)
+   * @returns Transaction hash and gas used
+   */
+  async keeperDeleverage(req: CloseLoopRequest): Promise<SentTx> {
+    this.logger.info(`Keeper deleverage on ${req.collateralAsset}`);
+
+    const call = {
+      account: this.account,
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'keeperDeleverage',
+      args: [
+        {
+          collateralAsset: req.collateralAsset,
+          borrowAsset: req.borrowAsset,
+          swapData: req.swapData,
+          minSwapOut: req.minSwapOut,
+        },
+      ],
+    } as const;
+
+    return this.simulateAndSend(call);
+  }
+
+  /**
    * Approve the executor to spend margin tokens on behalf of the owner.
    * @param token - The ERC20 token address to approve
    * @param amount - The amount to approve
@@ -257,7 +287,7 @@ export class TransactionBuilder {
     account: Account;
     address: Address;
     abi: typeof loopingExecutorAbi;
-    functionName: 'openLoop' | 'closeLoop' | 'setEMode' | 'pause';
+    functionName: 'openLoop' | 'closeLoop' | 'keeperDeleverage' | 'setEMode' | 'pause';
     args: readonly unknown[];
   }): Promise<SentTx> {
     // Simulate against the "pending" block — on Base that resolves to the
@@ -383,7 +413,10 @@ export class TransactionBuilder {
       if (remaining <= 0) {
         // Replace the stuck tx with the same nonce and bumped fees (RBF).
         // Renew the confirmation window so the replacement gets its own
-        // chance to land rather than re-entering the loop immediately.
+        // chance to land rather than re-entering the loop immediately. When
+        // the fee cap leaves no room for a bump, no valid replacement exists —
+        // keep waiting on the original tx instead of submitting one the node
+        // would reject as underpriced.
         const replaced = await this.replaceWithHigherFees(
           currentHash,
           nonce,
@@ -391,8 +424,10 @@ export class TransactionBuilder {
           gasEstimate,
           encoded,
         );
-        currentHash = replaced.hash;
-        currentFees = replaced.fees;
+        if (replaced) {
+          currentHash = replaced.hash;
+          currentFees = replaced.fees;
+        }
         deadline = Date.now() + this.pendingTimeoutMs;
         continue;
       }
@@ -423,6 +458,9 @@ export class TransactionBuilder {
    * re-applies the operator's hard gas cap so a replacement can never exceed
    * the stated maximum. The encoded `to`/`data` of the original call is
    * preserved so the replacement resubmits the same contract call.
+   * @returns The replacement hash and fees, or null when the original fees are
+   *          already at the cap and no higher-fee replacement is possible
+   *          (a same-fee resubmission would be rejected as underpriced).
    */
   private async replaceWithHigherFees(
     oldHash: Hex,
@@ -430,20 +468,28 @@ export class TransactionBuilder {
     fees: GasFees,
     gasEstimate: bigint,
     encoded: EncodedTx,
-  ): Promise<{ hash: Hex; fees: GasFees }> {
+  ): Promise<{ hash: Hex; fees: GasFees } | null> {
     const bump = (v: bigint) => v + (v * this.rbfBumpBps) / 100n;
     const cap = this.gas.maxFeeCap();
     let maxFeePerGas = bump(fees.maxFeePerGas);
     let maxPriorityFeePerGas = bump(fees.maxPriorityFeePerGas);
     // Re-apply the configured hard cap; if the bumped fee already exceeds it,
-    // clamp to the cap. If the original fee was already at the cap, no higher
-    // valid replacement is possible — surface the original gas unchanged so
-    // the caller can retry on the next cycle instead of overspending.
+    // clamp to the cap.
     if (maxFeePerGas > cap) {
       maxFeePerGas = cap;
     }
     if (maxPriorityFeePerGas > maxFeePerGas) {
       maxPriorityFeePerGas = maxFeePerGas;
+    }
+    if (
+      maxFeePerGas <= fees.maxFeePerGas &&
+      maxPriorityFeePerGas <= fees.maxPriorityFeePerGas
+    ) {
+      this.logger.warn(
+        `Tx ${oldHash} pending past timeout but fees already at the cap — ` +
+          `no valid replacement; waiting for the original tx`,
+      );
+      return null;
     }
     const newFees: GasFees = { maxFeePerGas, maxPriorityFeePerGas };
 
