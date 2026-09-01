@@ -13,7 +13,7 @@ import { RiskEngine } from './position/risk-engine';
 import { PnLTracker } from './position/pnl-tracker';
 import { estimateRealizedPnL } from './position/pnl-estimate';
 import { PositionStore } from './position/position-store';
-import { TransactionBuilder } from './orchestrator/tx-builder';
+import { SentTx, TransactionBuilder } from './orchestrator/tx-builder';
 import { GasStrategy } from './utils/gas-strategy';
 import { createLogger, Logger } from './utils/logger';
 
@@ -26,8 +26,6 @@ export interface OpenPositionInfo {
   marginUsd: number;
   /** Gas used by the approve+open transactions, in gas units (receipt.gasUsed). */
   openTxGasUsed: bigint;
-  /** Whether the e-mode preflight was applied at open (reset after close). */
-  emodeApplied: boolean;
   openTxHash: Hex;
   /** Epoch ms when the open tx confirmed. */
   openedAt: number;
@@ -214,8 +212,34 @@ export class LoopingBot {
         this.openPosition = undefined;
         this.positionStore.clear();
       }
+      if (!onChainOpen) {
+        await this.resetStaleEMode();
+      }
     } catch (error) {
       this.logger.warn(`Open-position reconciliation skipped: ${error}`);
+    }
+  }
+
+  /**
+   * Reset the executor's e-mode to NONE when no position is open but the pool
+   * still reports an active category — left over from a close whose reset
+   * failed or never ran (crash, legacy version). Read from chain rather than
+   * persisted state so recovery does not depend on the position file. While a
+   * category stays active, borrowing any non-category asset reverts and the
+   * next non-ETH open would be blocked.
+   */
+  private async resetStaleEMode(): Promise<void> {
+    if (!this.txBuilder || this.config.dryRun) return;
+    try {
+      const emode = await this.healthMonitor!.getUserEMode();
+      if (emode !== EMODE.NONE) {
+        this.logger.warn(
+          `Executor still in e-mode category ${emode} with no open position — resetting`,
+        );
+        await this.txBuilder.setEMode(EMODE.NONE);
+      }
+    } catch (error) {
+      this.logger.error(`Stale e-mode reset failed: ${error}`);
     }
   }
 
@@ -401,7 +425,6 @@ export class LoopingBot {
       openedAt: Date.now(),
       riskId: position.id,
       decimals: best.decimals,
-      emodeApplied: best.needsEmode,
     };
     this.positionStore.set(this.openPosition);
     this.logger.info(
@@ -442,11 +465,26 @@ export class LoopingBot {
         // closeLoop is blocked while the executor is paused (e.g. by the
         // rate-feed circuit breaker) — exactly when a critical position most
         // needs unwinding. Fall back to keeperDeleverage, which the contract
-        // deliberately keeps callable while paused.
+        // deliberately keeps callable while paused. The keeper gate uses the
+        // contract's own criticalHealthFactor (default 1.02), which is
+        // configured independently of the bot's trigger (default 1.10): when
+        // the HF sits between the two, raise the on-chain trigger to the
+        // bot's threshold first (onlyOwner, not pausable) so the keeper call
+        // is accepted for every HF the bot classifies as critical.
         const paused = await this.healthMonitor.isPaused();
-        const sent = paused
-          ? await this.txBuilder.keeperDeleverage(closeReq)
-          : await this.txBuilder.closeLoop(closeReq);
+        let sent: SentTx;
+        if (paused) {
+          const onChainCritical =
+            await this.healthMonitor.getCriticalHealthFactor();
+          if (snapshot.healthFactor >= onChainCritical) {
+            await this.txBuilder.setCriticalHealthFactor(
+              this.config.healthFactorCriticalWad
+            );
+          }
+          sent = await this.txBuilder.keeperDeleverage(closeReq);
+        } else {
+          sent = await this.txBuilder.closeLoop(closeReq);
+        }
 
         if (openPos) {
           this.riskEngine.recordClose(openPos.riskId, sent.hash);
@@ -456,15 +494,20 @@ export class LoopingBot {
         const closedAt = Date.now();
         this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
 
-        // Leave e-mode the way we found it: while the ETH-correlated category
-        // stays active, borrowing any non-category asset reverts, which would
-        // block the next non-ETH open until a manual reset.
-        if (openPos?.emodeApplied) {
-          try {
-            await this.txBuilder.setEMode(EMODE.NONE);
-          } catch (error) {
-            this.logger.error(`E-mode reset after close failed: ${error}`);
+        // Leave e-mode the way we found it: while a category stays active,
+        // borrowing any non-category asset reverts, blocking the next
+        // non-ETH open. Detected from chain state (not the position file) so
+        // the reset still runs for legacy positions and after a crash; a
+        // failure here is retried by the startup reconciliation.
+        let emodeResetGas = 0n;
+        try {
+          const emode = await this.healthMonitor.getUserEMode();
+          if (emode !== EMODE.NONE) {
+            const reset = await this.txBuilder.setEMode(EMODE.NONE);
+            emodeResetGas = reset.gasUsed ?? 0n;
           }
+        } catch (error) {
+          this.logger.error(`E-mode reset after close failed: ${error}`);
         }
 
         // Realized PnL: estimate accrued yield from the net APY at open over
@@ -478,7 +521,8 @@ export class LoopingBot {
                 .getAllPositions()
                 .find((p) => p.id === openPos.riskId)?.netApyBpsAtOpen ?? 0;
             const closeGasUsed = sent.gasUsed ?? 0n;
-            const gasWei = openPos.openTxGasUsed + closeGasUsed;
+            const gasWei =
+              openPos.openTxGasUsed + closeGasUsed + emodeResetGas;
 
             const [priceUsd, fees] = await Promise.all([
               this.rateMonitor.getAssetPriceUsd(collateralAsset),

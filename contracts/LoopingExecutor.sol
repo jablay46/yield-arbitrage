@@ -630,10 +630,10 @@ contract LoopingExecutor is FlashloanBase {
         emit SwapRouterUpdated(_swapRouter);
     }
 
-    /**
-     * @notice Update the Aave price oracle address
-     * @param _oracle The new oracle address
-     */
+    /// @notice Update the Aave price oracle used for cross-asset flashloan
+    ///         sizing and the keeper slippage floor. Deliberately not
+    ///         pausable, so a stale or compromised oracle can always be
+    ///         replaced while the rest of the contract is frozen.
     function setOracle(address _oracle) external onlyOwner {
         if (_oracle == address(0)) revert ZeroAddress();
         oracle = IAaveOracle(_oracle);

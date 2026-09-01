@@ -10,6 +10,9 @@ const config = BotConfigSchema.parse({
   dryRun: false,
 });
 
+const HF_CRITICAL = 1_040_000_000_000_000_000n; // 1.04 — below bot default 1.10
+const ON_CHAIN_CRITICAL = 1_020_000_000_000_000_000n; // contract default 1.02
+
 const openPos: OpenPositionInfo = {
   asset: '0x4200000000000000000000000000000000000006',
   symbol: 'WETH',
@@ -17,7 +20,6 @@ const openPos: OpenPositionInfo = {
   leverage: 2,
   marginUsd: 2000,
   openTxGasUsed: 100n,
-  emodeApplied: false,
   openTxHash: '0xopen',
   openedAt: Date.now() - 60_000,
   riskId: 'loop-1',
@@ -30,11 +32,14 @@ interface BotHarness {
     hasOpenPosition: ReturnType<typeof vi.fn>;
     check: ReturnType<typeof vi.fn>;
     isPaused: ReturnType<typeof vi.fn>;
+    getCriticalHealthFactor: ReturnType<typeof vi.fn>;
+    getUserEMode: ReturnType<typeof vi.fn>;
   };
   txBuilder: {
     closeLoop: ReturnType<typeof vi.fn>;
     keeperDeleverage: ReturnType<typeof vi.fn>;
     setEMode: ReturnType<typeof vi.fn>;
+    setCriticalHealthFactor: ReturnType<typeof vi.fn>;
   };
   riskEngine: {
     recordClose: ReturnType<typeof vi.fn>;
@@ -54,9 +59,14 @@ interface BotHarness {
     error: ReturnType<typeof vi.fn>;
   };
   healthCycle: () => Promise<void>;
+  reconcileOpenPosition: () => Promise<void>;
 }
 
-function makeBot(paused: boolean): BotHarness {
+function makeBot(opts: {
+  paused: boolean;
+  onChainCritical?: bigint;
+  userEMode?: number;
+}): BotHarness {
   const bot = new LoopingBot(config) as unknown as BotHarness;
   bot.running = true;
   bot.openPosition = { ...openPos };
@@ -66,12 +76,16 @@ function makeBot(paused: boolean): BotHarness {
       snapshot: {
         totalCollateralBase: 0n,
         totalDebtBase: 1n,
-        healthFactor: 1_040_000_000_000_000_000n,
+        healthFactor: HF_CRITICAL,
         timestamp: Date.now(),
       },
       action: 'deleverage',
     }),
-    isPaused: vi.fn().mockResolvedValue(paused),
+    isPaused: vi.fn().mockResolvedValue(opts.paused),
+    getCriticalHealthFactor: vi
+      .fn()
+      .mockResolvedValue(opts.onChainCritical ?? ON_CHAIN_CRITICAL),
+    getUserEMode: vi.fn().mockResolvedValue(opts.userEMode ?? 0),
   };
   bot.txBuilder = {
     closeLoop: vi.fn().mockResolvedValue({ hash: '0xclose', gasUsed: 50n }),
@@ -79,6 +93,9 @@ function makeBot(paused: boolean): BotHarness {
       .fn()
       .mockResolvedValue({ hash: '0xkeeper', gasUsed: 50n }),
     setEMode: vi.fn().mockResolvedValue({ hash: '0xemode', gasUsed: 10n }),
+    setCriticalHealthFactor: vi
+      .fn()
+      .mockResolvedValue({ hash: '0xcritical', gasUsed: 5n }),
   };
   bot.riskEngine = {
     recordClose: vi.fn(),
@@ -98,7 +115,7 @@ function makeBot(paused: boolean): BotHarness {
 
 describe('LoopingBot healthCycle deleverage path', () => {
   it('uses keeperDeleverage when the executor is paused', async () => {
-    const bot = makeBot(true);
+    const bot = makeBot({ paused: true, onChainCritical: HF_CRITICAL + 1n });
 
     await bot.healthCycle();
 
@@ -108,7 +125,7 @@ describe('LoopingBot healthCycle deleverage path', () => {
   });
 
   it('uses closeLoop when the executor is not paused', async () => {
-    const bot = makeBot(false);
+    const bot = makeBot({ paused: false });
 
     await bot.healthCycle();
 
@@ -116,19 +133,74 @@ describe('LoopingBot healthCycle deleverage path', () => {
     expect(bot.txBuilder.keeperDeleverage).not.toHaveBeenCalled();
   });
 
-  it('resets e-mode to NONE after closing a position that used the preflight', async () => {
-    const bot = makeBot(false);
-    bot.openPosition = { ...openPos, emodeApplied: true };
+  it('raises the on-chain keeper trigger when the HF sits between the two thresholds', async () => {
+    // HF 1.04 is below the bot's 1.10 trigger but above the contract's 1.02:
+    // keeperDeleverage would revert HealthFactorNotCritical unless the
+    // on-chain trigger is synced first.
+    const bot = makeBot({ paused: true, onChainCritical: ON_CHAIN_CRITICAL });
+
+    await bot.healthCycle();
+
+    expect(bot.txBuilder.setCriticalHealthFactor).toHaveBeenCalledWith(
+      config.healthFactorCriticalWad,
+    );
+    expect(bot.txBuilder.keeperDeleverage).toHaveBeenCalledOnce();
+  });
+
+  it('does not touch the on-chain trigger when the HF is already below it', async () => {
+    const bot = makeBot({ paused: true, onChainCritical: HF_CRITICAL + 1n });
+
+    await bot.healthCycle();
+
+    expect(bot.txBuilder.setCriticalHealthFactor).not.toHaveBeenCalled();
+    expect(bot.txBuilder.keeperDeleverage).toHaveBeenCalledOnce();
+  });
+
+  it('resets e-mode after close when the pool still reports a category', async () => {
+    const bot = makeBot({ paused: false, userEMode: 1 });
 
     await bot.healthCycle();
 
     expect(bot.txBuilder.setEMode).toHaveBeenCalledWith(EMODE.NONE);
   });
 
-  it('does not touch e-mode after closing a position that never set it', async () => {
-    const bot = makeBot(false);
+  it('does not touch e-mode when the pool reports NONE', async () => {
+    const bot = makeBot({ paused: false, userEMode: 0 });
 
     await bot.healthCycle();
+
+    expect(bot.txBuilder.setEMode).not.toHaveBeenCalled();
+  });
+
+  it('includes the e-mode reset gas in realized PnL', async () => {
+    const bot = makeBot({ paused: false, userEMode: 1 });
+
+    await bot.healthCycle();
+
+    // gas units: open 100 + close 50 + reset 10 = 160, at 1 wei/gas and
+    // $2000/ETH -> 160e-18 * 2000 = 3.2e-13 USD
+    const record = bot.pnlTracker.record.mock.calls[0][0] as {
+      gasCostUsd: number;
+    };
+    expect(record.gasCostUsd).toBeCloseTo(3.2e-13, 15);
+  });
+
+  it('resets a stale e-mode category during startup reconciliation', async () => {
+    const bot = makeBot({ paused: false, userEMode: 1 });
+    bot.openPosition = undefined;
+    bot.healthMonitor.hasOpenPosition = vi.fn().mockResolvedValue(false);
+
+    await bot.reconcileOpenPosition();
+
+    expect(bot.txBuilder.setEMode).toHaveBeenCalledWith(EMODE.NONE);
+  });
+
+  it('leaves e-mode alone during reconciliation when the pool reports NONE', async () => {
+    const bot = makeBot({ paused: false, userEMode: 0 });
+    bot.openPosition = undefined;
+    bot.healthMonitor.hasOpenPosition = vi.fn().mockResolvedValue(false);
+
+    await bot.reconcileOpenPosition();
 
     expect(bot.txBuilder.setEMode).not.toHaveBeenCalled();
   });

@@ -58,7 +58,7 @@ describe('TransactionBuilder RBF at the fee cap', () => {
     expect(walletClient.sendTransaction).not.toHaveBeenCalled();
   });
 
-  it('still replaces via a priority-fee bump when only maxFee is at the cap', async () => {
+  it('returns null when only the priority fee could rise (pools require both caps to clear the bump)', async () => {
     const { rbf, walletClient } = makeBuilder(100n);
 
     const res = await rbf.replaceWithHigherFees(
@@ -69,12 +69,10 @@ describe('TransactionBuilder RBF at the fee cap', () => {
       ENCODED,
     );
 
-    // maxFee is clamped at the cap, but the priority fee can still rise —
-    // a valid replacement the node will accept.
-    expect(res).not.toBeNull();
-    expect(res!.fees.maxFeePerGas).toBe(100n);
-    expect(res!.fees.maxPriorityFeePerGas).toBe(15n);
-    expect(walletClient.sendTransaction).toHaveBeenCalledOnce();
+    // maxFee is clamped at the cap; a priority-only bump is rejected by
+    // Reth/geth replacement rules, so no replacement may be sent.
+    expect(res).toBeNull();
+    expect(walletClient.sendTransaction).not.toHaveBeenCalled();
   });
 
   it('bumps and resubmits the same calldata when below the cap', async () => {

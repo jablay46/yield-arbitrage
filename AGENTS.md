@@ -12,11 +12,11 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 
 - `forge build` — compiles contracts (warnings are lint notes, not errors).
 - `forge test` — full Base fork suite (43/43). Needs `BASE_RPC_URL`; `FORK_BLOCK` is optional (defaults to 50M). Tests pass at the pinned block and at the latest block.
-- `cd bot && npm run build && npm test` — bot type-check + 78 unit tests.
+- `cd bot && npm run build && npm test` — bot type-check + 83 unit tests.
 
 ## Known test caveats
 
-- The suite is **green**: `forge test` 43/43 and bot `npm test` 78/78, both at the pinned `FORK_BLOCK=50000000` and at the latest Base block. Earlier notes about `test_openLoop_2x_aave_source` failing are obsolete — pinning `evm_version = "prague"` (in `foundry.toml`) activates the opcodes the Aave Pool uses, and the Aave-source path now passes.
+- The suite is **green**: `forge test` 43/43 and bot `npm test` 83/83, both at the pinned `FORK_BLOCK=50000000` and at the latest Base block. Earlier notes about `test_openLoop_2x_aave_source` failing are obsolete — pinning `evm_version = "prague"` (in `foundry.toml`) activates the opcodes the Aave Pool uses, and the Aave-source path now passes.
 - Aave V3 `repay` rejects the `type(uint256).max` sentinel when repaying `onBehalfOf` another address (`NoExplicitAmountToRepayOnBehalf`) — fork tests that repay the executor's debt externally must pass the explicit debt amount.
 - `FORK_BLOCK` is optional: omit it to fork latest, or set it for reproducibility. Both modes pass.
 
@@ -26,8 +26,8 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 - `contracts/security/SecurityUtils.sol` — two-step ownership (`Ownable2Step`), `ReentrancyGuard`, `Pausable`. `renounceOwnership` clears `pendingOwner`; `transferOwnership(address(0))` cancels a pending transfer.
 - `bot/src/strategy/find-candidates.ts` — ranks loop candidates; liquidity is checked per leverage level, not only at 5x.
 - `bot/src/monitor/rate-monitor.ts` — multicalls reserve + config + aToken balanceOf + variableDebtToken totalSupply; `utilizationBps` derived from debt/(debt+liquidity).
-- `bot/src/orchestrator/tx-builder.ts` — simulates then sends via raw `sendTransaction` with an explicit, rollback-on-failure nonce tracker. RBF replacement resubmits the encoded `to`/`data` (same calldata), re-applies the `maxGasPriceGwei` cap, and renews the receipt deadline; when both fees are already at the cap no replacement is sent (a same-fee resubmission would be rejected as underpriced) and the original tx is awaited. Exposes `setEMode` for the e-mode preflight and `keeperDeleverage` for the paused-executor emergency path.
-- `bot/src/index.ts` `maybeOpen` — e-mode preflight: when the best candidate needs ETH-correlated e-mode (5x), the bot calls `setEMode(1)` on the executor before approve/open, so the operator doesn't have to remember a manual step. `healthCycle` closes via `closeLoop` normally but falls back to `keeperDeleverage` when the executor is paused (closeLoop is `whenNotPaused`), and resets e-mode to 0 after closing a position that used the preflight (`emodeApplied` is persisted in the position file).
+- `bot/src/orchestrator/tx-builder.ts` — simulates then sends via raw `sendTransaction` with an explicit, rollback-on-failure nonce tracker. RBF replacement resubmits the encoded `to`/`data` (same calldata), re-applies the `maxGasPriceGwei` cap, and renews the receipt deadline; a replacement is only sent when BOTH fee cap and tip cap can clear the bump (Reth/geth reject single-cap bumps as underpriced), and a failed replacement send falls back to waiting on the original tx. Exposes `setEMode`, `setCriticalHealthFactor`, and `keeperDeleverage`.
+- `bot/src/index.ts` `maybeOpen` — e-mode preflight: when the best candidate needs ETH-correlated e-mode (5x), the bot calls `setEMode(1)` on the executor before approve/open, so the operator doesn't have to remember a manual step. `healthCycle` closes via `closeLoop` normally but falls back to `keeperDeleverage` when the executor is paused — first raising the on-chain `criticalHealthFactor` to the bot's threshold when the HF sits between the two (contract default 1.02 vs bot default 1.10). E-mode cleanup is chain-driven (`getUserEMode` on the pool), not persisted-state-driven: after a close and again at startup reconciliation, any active category with no open position is reset to NONE, and the reset gas is included in realized PnL.
 
 ## Style
 
