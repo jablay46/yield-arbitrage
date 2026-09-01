@@ -43,8 +43,8 @@ export class TransactionBuilder {
   private inflightNonce: bigint | undefined;
   /** How long (ms) to wait for a receipt before replacing the tx with higher fees. */
   private readonly pendingTimeoutMs = 60_000;
-  /** Replacement fee bump, as a fraction of the original maxFeePerGas (e.g. 20n = +20%). */
-  private readonly rbfBumpBps = 20n;
+  /** Replacement fee bump, as a fraction of the original maxFeePerGas (e.g. 50n = +50%). */
+  private readonly rbfBumpBps = 50n;
 
   /**
    * Create a new TransactionBuilder instance.
