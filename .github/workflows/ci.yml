@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: this workflow only needs to read the repo.
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    name: Contracts (forge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Show forge version
+        run: forge --version
+
+      - name: Compile
+        run: forge build
+
+      # Fork tests fall back to the public Base RPC (https://mainnet.base.org)
+      # when BASE_RPC_URL is unset; set the repo secret for rate-limit headroom.
+      # secrets.* expands to an empty string when absent, and forge's envOr
+      # treats an empty-but-set value as set, so we coalesce here instead.
+      - name: Run tests
+        env:
+          BASE_RPC_URL: ${{ secrets.BASE_RPC_URL || vars.BASE_RPC_URL || 'https://mainnet.base.org' }}
+        run: forge test
+
+  bot:
+    name: Bot (tsc + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bot
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type-check & build
+        run: npm run build
+
+      - name: Test
+        run: npm test

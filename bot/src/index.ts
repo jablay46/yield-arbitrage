@@ -4,6 +4,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
 import { BotConfig, loadConfigFromEnv } from './config';
+import { EMODE } from './config/constants';
 import { RateMonitor } from './monitor/rate-monitor';
 import { HealthMonitor } from './monitor/health-monitor';
 
@@ -267,15 +268,20 @@ export class LoopingBot {
       this.logger.info(
         `[DRY RUN] Would open ${best.leverage}x loop on ${best.symbol} ` +
           `(net ${(best.netApyBps / 100).toFixed(2)}% APY, HF ~${best.projectedHealthFactor.toFixed(3)}, ` +
-          `margin ~$${marginUsd.toFixed(2)})`
+          `margin ~$${marginUsd.toFixed(2)})` +
+          (best.needsEmode ? ' (needs e-mode category 1)' : '')
       );
       return;
     }
 
-    if (best.needsEmode) {
-      this.logger.info('Candidate requires e-mode; set it on the executor first');
-      return;
-    }
+    // Preflight: a high-leverage ETH-correlated loop needs the e-mode category
+    // set on the executor before the open can borrow against the higher LT.
+    // The bot applies it (category 1 = ETH-correlated) right before opening so
+    // the operator doesn't have to remember a manual setEMode. Its gas is a
+    // real on-chain cost, so it's folded into openTxGasUsed below.
+    const emode = best.needsEmode
+      ? await this.txBuilder.setEMode(EMODE.ETH_CORRELATED)
+      : undefined;
 
     const approve = await this.txBuilder.approveMargin(
       best.asset,
@@ -308,7 +314,10 @@ export class LoopingBot {
       marginAmount: best.marginAmount,
       leverage: best.leverage,
       marginUsd,
-      openTxGasUsed: (approve.gasUsed ?? 0n) + (sent.gasUsed ?? 0n),
+      openTxGasUsed:
+        (emode?.gasUsed ?? 0n) +
+        (approve.gasUsed ?? 0n) +
+        (sent.gasUsed ?? 0n),
       openTxHash: sent.hash,
       openedAt: Date.now(),
       riskId: position.id,
