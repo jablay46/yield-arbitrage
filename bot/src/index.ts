@@ -3,7 +3,7 @@ import { createPublicClient, createWalletClient, http, webSocket, Transport, Add
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 
-import { BotConfig, loadConfigFromEnv } from './config';
+import { BotConfig, loadConfig } from './config';
 import { EMODE } from './config/constants';
 import { RateMonitor } from './monitor/rate-monitor';
 import { HealthMonitor } from './monitor/health-monitor';
@@ -12,6 +12,7 @@ import { findLoopCandidates, LoopCandidate } from './strategy/find-candidates';
 import { RiskEngine } from './position/risk-engine';
 import { PnLTracker } from './position/pnl-tracker';
 import { estimateRealizedPnL } from './position/pnl-estimate';
+import { PositionStore } from './position/position-store';
 import { TransactionBuilder } from './orchestrator/tx-builder';
 import { GasStrategy } from './utils/gas-strategy';
 import { createLogger, Logger } from './utils/logger';
@@ -48,6 +49,7 @@ export class LoopingBot {
   private rateMonitor: RateMonitor;
   private riskEngine: RiskEngine;
   private pnlTracker: PnLTracker;
+  private positionStore: PositionStore;
   private gasStrategy: GasStrategy;
   private healthMonitor?: HealthMonitor;
   private txBuilder?: TransactionBuilder;
@@ -57,6 +59,8 @@ export class LoopingBot {
   private monitorCycleInFlight = false;
   private healthCycleInFlight = false;
   private consecutiveEmptyRateCycles = 0;
+  /** True while the rate feed is empty/blind — disables new opens. */
+  private rateBlindMode = false;
   private timers: NodeJS.Timeout[] = [];
 
   constructor(config: BotConfig) {
@@ -85,6 +89,11 @@ export class LoopingBot {
       minHealthFactor: Number(config.minHealthFactorWad) / 1e18,
     });
     this.pnlTracker = new PnLTracker(config.pnlPath);
+    this.positionStore = new PositionStore(config.positionPath);
+    // Recover an open position persisted across restarts so the health loop can
+    // still close it and compute realized PnL. Reconciled against the on-chain
+    // flag in start() to avoid trusting a stale file.
+    this.openPosition = this.positionStore.get();
 
     const gasStrategy = new GasStrategy(
       publicClient,
@@ -137,6 +146,13 @@ export class LoopingBot {
     if (this.running) return;
     this.running = true;
 
+    // Reconcile the recovered in-memory open position with the on-chain flag.
+    // A persisted file saying "open" while the contract says "closed" means a
+    // close happened out-of-band (or the file is stale); drop it so we don't
+    // act on ghost state. Conversely, if the file is empty but the contract is
+    // open, we cannot compute PnL but we can still close via getOpenPositionAssets.
+    void this.reconcileOpenPosition();
+
     this.logger.info('Starting looping bot', {
       network: this.config.network,
       dryRun: this.config.dryRun,
@@ -173,6 +189,28 @@ export class LoopingBot {
     this.logger.info('Bot stopped');
   }
 
+  /**
+   * Reconcile the persisted open position with the on-chain position flag.
+   * If the file says open but the contract says closed (out-of-band close or
+   * stale file), drop the persisted state. Failures are logged but never throw,
+   * so a transient RPC error cannot block startup.
+   */
+  private async reconcileOpenPosition(): Promise<void> {
+    if (!this.healthMonitor) return;
+    try {
+      const onChainOpen = await this.healthMonitor.hasOpenPosition();
+      if (this.openPosition && !onChainOpen) {
+        this.logger.warn(
+          'Persisted open position no longer matches on-chain state (closed out-of-band?); clearing',
+        );
+        this.openPosition = undefined;
+        this.positionStore.clear();
+      }
+    } catch (error) {
+      this.logger.warn(`Open-position reconciliation skipped: ${error}`);
+    }
+  }
+
   /** Fetch live rates and rank loop candidates. */
   private async monitorCycle(): Promise<void> {
     if (!this.running || this.monitorCycleInFlight) return;
@@ -185,8 +223,11 @@ export class LoopingBot {
 
       // Circuit breaker: rate fetches can return an empty array when the
       // Aave data provider consistently fails (address mismatch, contract
-      // paused, RPC issue). Alert the operator after 5 consecutive empty
-      // cycles so a silent stall in live mode is noticed.
+      // paused, RPC issue). After a few consecutive empty cycles the bot is
+      // effectively blind to rates; in live mode we must fail closed rather
+      // than risk opening on stale/empty data. We block new opens (the flag
+      // short-circuits maybeOpen) and, at a higher threshold, pause the
+      // executor on-chain so an unattended live deployment cannot keep running.
       if (rates.length === 0) {
         this.consecutiveEmptyRateCycles++;
         if (this.consecutiveEmptyRateCycles >= 5) {
@@ -194,8 +235,38 @@ export class LoopingBot {
             `Rate fetch returned no assets for ${this.consecutiveEmptyRateCycles} consecutive cycles — check Aave data provider / RPC`,
           );
         }
+        if (!this.rateBlindMode) {
+          this.rateBlindMode = true;
+          this.logger.warn(
+            'Rate feed blind — opening disabled until rates recover',
+          );
+        }
+        // At 10 consecutive empty cycles in live mode, pause the executor so a
+        // stalled rate feed cannot leave a position unmonitored/over-opened.
+        if (
+          this.consecutiveEmptyRateCycles >= 10 &&
+          !this.config.dryRun &&
+          this.txBuilder &&
+          this.healthMonitor
+        ) {
+          try {
+            const paused = await this.healthMonitor.isPaused();
+            if (!paused) {
+              this.logger.error(
+                'Rate feed blind for 10 cycles — pausing executor as a fail-closed measure',
+              );
+              await this.txBuilder.pause();
+            }
+          } catch (error) {
+            this.logger.error(`Fail-closed pause attempt failed: ${error}`);
+          }
+        }
       } else {
         this.consecutiveEmptyRateCycles = 0;
+        if (this.rateBlindMode) {
+          this.rateBlindMode = false;
+          this.logger.info('Rate feed recovered — opening re-enabled');
+        }
       }
 
       const candidates = findLoopCandidates(
@@ -208,7 +279,7 @@ export class LoopingBot {
 
       this.logTopCandidates(candidates);
 
-      if (this.config.autoTrade) {
+      if (this.config.autoTrade && !this.rateBlindMode) {
         await this.maybeOpen(candidates);
       }
     } catch (error) {
@@ -323,6 +394,7 @@ export class LoopingBot {
       riskId: position.id,
       decimals: best.decimals,
     };
+    this.positionStore.set(this.openPosition);
     this.logger.info(
       `Loop opened: approve=${approve.hash} open=${sent.hash}`
     );
@@ -363,6 +435,7 @@ export class LoopingBot {
           this.riskEngine.recordClose(openPos.riskId, sent.hash);
         }
         this.openPosition = undefined;
+        this.positionStore.clear();
         const closedAt = Date.now();
         this.logger.warn(`Loop closed due to low HF: ${sent.hash}`);
 
@@ -454,7 +527,7 @@ export class LoopingBot {
 }
 
 export async function main(): Promise<void> {
-  const config = loadConfigFromEnv();
+  const config = loadConfig();
   const bot = new LoopingBot(config);
 
   const shutdown = () => {

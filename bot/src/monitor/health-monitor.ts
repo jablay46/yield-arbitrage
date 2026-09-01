@@ -87,6 +87,18 @@ export class HealthMonitor {
   }
 
   /**
+   * Check if the executor is paused.
+   * @returns True if the executor contract is currently paused.
+   */
+  async isPaused(): Promise<boolean> {
+    return this.client.readContract({
+      address: this.executor,
+      abi: loopingExecutorAbi,
+      functionName: 'paused',
+    });
+  }
+
+  /**
    * Retrieve the collateral and borrow assets of the currently open position.
    * @returns Object containing collateral and borrow asset addresses
    */

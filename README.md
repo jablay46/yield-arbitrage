@@ -112,6 +112,30 @@ before opening.
 
 At 0.01 gwei Base fees both are well under $0.01.
 
+## Break-even & hold time
+
+A loop is profitable only when the net APY earned exceeds the cost of opening
+and closing. With the gas snapshot above:
+
+```
+grossYieldUsd = marginUsd * netApyBps / 10000 * holdDays / 365
+breakEvenHoldDays = (openGasCostUsd + closeGasCostUsd) * 365 /
+                    (marginUsd * netApyBps / 10000)
+```
+
+Example (margin $1,000, net APY 200 bps = 2%/yr, gas 0.01 gwei, ETH $2,000):
+
+| Lever | open + close gas | open+close USD | break-even hold |
+|---|---|---|---|
+| 2x   | ~480k + ~645k ≈ 1.13M gas | ~$0.023 | ~0.4 days |
+| 5x   | similar order            | ~$0.03  | ~0.5 days |
+
+At higher Base gas (1 gwei) the open+close cost rises ~100x to a few dollars,
+so a small-margin loop needs a higher net APY (or a longer hold) to clear the
+fees. The bot's `MIN_NET_APY_BPS` (default 50 = 0.5%/yr) is a floor on the
+*rate*, not on whether a given hold will repay gas; size `marginAmount` so that
+the break-even hold is well below your intended open duration.
+
 ## Risk warnings
 
 - **Interest-rate risk**: borrow APR can exceed supply APY (the loop turns

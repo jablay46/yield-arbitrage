@@ -185,9 +185,11 @@ abstract contract FlashloanBase is
     ) internal virtual;
 
     /**
-     * @notice Rescue tokens stuck on the contract
+     * @notice Rescue tokens stuck on the contract.
+     * @dev Overridable so derived contracts can forbid withdrawing assets that
+     *      back an active position (which would silently break the loop).
      */
-    function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
+    function emergencyWithdraw(address token, uint256 amount) external virtual onlyOwner {
         IERC20(token).safeTransfer(owner(), amount);
         emit EmergencyWithdraw(token, amount, owner());
     }

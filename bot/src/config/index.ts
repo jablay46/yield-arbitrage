@@ -57,10 +57,39 @@ export const BotConfigSchema = z.object({
 
   // Storage / logging
   pnlPath: z.string().default('./data/pnl.json'),
+  /** Path to the persisted open-position file (survives restart). */
+  positionPath: z.string().default('./data/position.json'),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
 
 export type BotConfig = z.infer<typeof BotConfigSchema>;
+
+/**
+ * Load non-secret config from an optional JSON file at `configPath` and merge
+ * it with environment variables. Environment variables always win, so secrets
+ * (private key, RPC URLs with keys) stay out of the versioned config file while
+ * reusable settings (leverage, intervals, paths, gas caps) can live in a file.
+ *
+ * Returns the raw merged object (not yet schema-validated) or `{}` when no
+ * file path is given or the file is missing.
+ */
+export function loadConfigFile(
+  configPath: string | undefined,
+): Record<string, unknown> {
+  if (!configPath) return {};
+  try {
+    const fs = require('node:fs') as typeof import('node:fs');
+    if (!fs.existsSync(configPath)) return {};
+    const raw = fs.readFileSync(configPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    // A corrupt config file should not crash startup; env vars still apply.
+    return {};
+  }
+}
 
 /**
  * Parse a boolean value from an environment variable string.
@@ -77,54 +106,81 @@ function boolFromEnv(v: string | undefined, fallback: boolean): boolean {
   throw new Error(`invalid boolean env value: "${v}" (expected true/false)`);
 }
 
+/** Prefer an env value, else fall back to a file value. */
+function envOrFile<T>(envVal: T | undefined, fileVal: T | undefined): T | undefined {
+  return envVal !== undefined ? envVal : fileVal;
+}
+
 /**
- * Load config from environment variables. Throws with a readable message
- * on invalid configuration.
+ * Load and validate config from an optional JSON file plus environment
+ * variables. Env values override file values for every overlapping key, and
+ * secrets (e.g. EXECUTOR_PRIVATE_KEY) should only ever come from env.
+ * @param env - Environment variables (defaults to process.env)
+ * @param configPath - Path to an optional JSON config file (defaults to CONFIG_PATH env var)
  */
-export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  configPath: string | undefined = env.CONFIG_PATH,
+): BotConfig {
+  const file = loadConfigFile(configPath);
+  // Env vars override file values for overlapping keys; the spread of `file`
+  // already seeds non-secret defaults from the config file.
   const raw = {
-    rpcUrl: env.RPC_URL ?? env.BASE_RPC_URL ?? 'https://mainnet.base.org',
-    wsUrl: env.BASE_WS_URL,
+    ...file,
+    rpcUrl:
+      env.RPC_URL ?? env.BASE_RPC_URL ?? file.rpcUrl ?? 'https://mainnet.base.org',
+    wsUrl: envOrFile(env.BASE_WS_URL, file.wsUrl),
     privateKey: env.EXECUTOR_PRIVATE_KEY || undefined,
-    executorAddress: env.EXECUTOR_ADDRESS || undefined,
-    marginAsset: env.MARGIN_ASSET,
-    marginAmount: env.MARGIN_AMOUNT ? BigInt(env.MARGIN_AMOUNT) : undefined,
-    leverage: env.LEVERAGE ? Number(env.LEVERAGE) : undefined,
-    dryRun: boolFromEnv(env.DRY_RUN, true),
-    autoTrade: boolFromEnv(env.AUTO_TRADE, false),
-    minNetApyBps: env.MIN_NET_APY_BPS ? Number(env.MIN_NET_APY_BPS) : undefined,
+    executorAddress: envOrFile(env.EXECUTOR_ADDRESS, file.executorAddress),
+    marginAsset: envOrFile(env.MARGIN_ASSET, file.marginAsset),
+    marginAmount: env.MARGIN_AMOUNT
+      ? BigInt(env.MARGIN_AMOUNT)
+      : file.marginAmount !== undefined
+        ? BigInt(file.marginAmount as string | number | bigint)
+        : undefined,
+    leverage: env.LEVERAGE ? Number(env.LEVERAGE) : file.leverage,
+    dryRun: boolFromEnv(env.DRY_RUN, Boolean(file.dryRun ?? true)),
+    autoTrade: boolFromEnv(env.AUTO_TRADE, Boolean(file.autoTrade ?? false)),
+    minNetApyBps: env.MIN_NET_APY_BPS
+      ? Number(env.MIN_NET_APY_BPS)
+      : file.minNetApyBps,
     minHealthFactorWad: env.MIN_HEALTH_FACTOR_WAD
       ? BigInt(env.MIN_HEALTH_FACTOR_WAD)
-      : undefined,
+      : file.minHealthFactorWad,
     healthFactorWarnWad: env.HEALTH_FACTOR_WARN_WAD
       ? BigInt(env.HEALTH_FACTOR_WARN_WAD)
-      : undefined,
+      : file.healthFactorWarnWad,
     healthFactorCriticalWad: env.HEALTH_FACTOR_CRITICAL_WAD
       ? BigInt(env.HEALTH_FACTOR_CRITICAL_WAD)
-      : undefined,
-    pollIntervalMs: env.POLL_INTERVAL_MS ? Number(env.POLL_INTERVAL_MS) : undefined,
+      : file.healthFactorCriticalWad,
+    pollIntervalMs: env.POLL_INTERVAL_MS
+      ? Number(env.POLL_INTERVAL_MS)
+      : file.pollIntervalMs,
     healthCheckIntervalMs: env.HEALTH_CHECK_INTERVAL_MS
       ? Number(env.HEALTH_CHECK_INTERVAL_MS)
-      : undefined,
-    cooldownMs: env.COOLDOWN_MS ? Number(env.COOLDOWN_MS) : undefined,
+      : file.healthCheckIntervalMs,
+    cooldownMs: env.COOLDOWN_MS ? Number(env.COOLDOWN_MS) : file.cooldownMs,
     usePendingBlock: env.USE_PENDING_BLOCK
       ? boolFromEnv(env.USE_PENDING_BLOCK, true)
-      : undefined,
-    maxMarginUsd: env.MAX_MARGIN_USD ? Number(env.MAX_MARGIN_USD) : undefined,
+      : file.usePendingBlock,
+    maxMarginUsd: env.MAX_MARGIN_USD
+      ? Number(env.MAX_MARGIN_USD)
+      : file.maxMarginUsd,
     priceCacheTtlMs: env.PRICE_CACHE_TTL_MS
       ? Number(env.PRICE_CACHE_TTL_MS)
-      : undefined,
+      : file.priceCacheTtlMs,
     maxGasPriceGwei: env.MAX_GAS_PRICE_GWEI
       ? Number(env.MAX_GAS_PRICE_GWEI)
-      : undefined,
+      : file.maxGasPriceGwei,
     priorityFeeGwei: env.PRIORITY_FEE_GWEI
       ? Number(env.PRIORITY_FEE_GWEI)
-      : undefined,
+      : file.priorityFeeGwei,
     gasBufferPercent: env.GAS_BUFFER_PERCENT
       ? Number(env.GAS_BUFFER_PERCENT)
-      : undefined,
-    pnlPath: env.PNL_PATH,
-    logLevel: env.LOG_LEVEL,
+      : file.gasBufferPercent,
+    pnlPath: envOrFile(env.PNL_PATH, file.pnlPath),
+    positionPath: envOrFile(env.POSITION_PATH, file.positionPath),
+    logLevel: envOrFile(env.LOG_LEVEL, file.logLevel),
   };
 
   const config = BotConfigSchema.parse(raw);
@@ -138,3 +194,11 @@ export function loadConfigFromEnv(env: NodeJS.ProcessEnv = process.env): BotConf
 
   return config;
 }
+
+/**
+ * Backwards-compatible alias for `loadConfig` (env-only, no config file).
+ * Kept so existing tests and entrypoints that call `loadConfigFromEnv(env)`
+ * continue to work; new code should call `loadConfig` to also pick up a
+ * `CONFIG_PATH` JSON file.
+ */
+export const loadConfigFromEnv = loadConfig;

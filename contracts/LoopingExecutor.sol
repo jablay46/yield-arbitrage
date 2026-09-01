@@ -52,6 +52,9 @@ contract LoopingExecutor is FlashloanBase {
     error MissingSwapData();
     error RepayMismatch(uint256 remaining);
     error ConversionOverflow();
+    error SwapTokenMismatch(address expected, address actual);
+    error SwapExcessPulled(uint256 pulled, uint256 expected);
+    error CannotWithdrawActiveAsset(address token);
 
     enum Mode {
         Open,
@@ -88,6 +91,9 @@ contract LoopingExecutor is FlashloanBase {
     IAaveOracle public oracle;
     address public swapRouter;
     uint256 public minHealthFactor = 1.05e18;
+    /// @dev Health factor at which a keeper may trigger an emergency deleverage.
+    ///      Floored at MIN_HEALTH_FACTOR_FLOOR so it cannot be set dangerously low.
+    uint256 public criticalHealthFactor = 1.02e18;
     bool public positionOpen;
     OpenPosition public openPosition;
 
@@ -107,6 +113,7 @@ contract LoopingExecutor is FlashloanBase {
         uint256 collateralWithdrawn
     );
     event MinHealthFactorUpdated(uint256 newMinHealthFactor);
+    event CriticalHealthFactorUpdated(uint256 newCriticalHealthFactor);
     event SwapRouterUpdated(address newRouter);
 
     constructor(
@@ -166,6 +173,29 @@ contract LoopingExecutor is FlashloanBase {
     function closeLoop(
         CloseParams calldata p
     ) external onlyOwner nonReentrant whenNotPaused {
+        _closeLoop(p);
+    }
+
+    /**
+     * @notice Keeper-callable emergency deleverage.
+     * @dev Anyone may call this, but only when the on-chain health factor has
+     *      dropped below the configured critical threshold. It runs the same
+     *      unwind as closeLoop, so a stalled owner/bot cannot leave a position
+     *      to be liquidated. Still nonReentrant and whenNotPaused. The position
+     *      pair is taken from the recorded open position; `p` must match it.
+     */
+    function keeperDeleverage(
+        CloseParams calldata p
+    ) external nonReentrant whenNotPaused {
+        if (!positionOpen) revert NoOpenPosition();
+
+        (, , , , , uint256 hf) = lendingPool.getUserAccountData(address(this));
+        if (hf >= criticalHealthFactor) revert HealthFactorTooLow(criticalHealthFactor, hf);
+
+        _closeLoop(p);
+    }
+
+    function _closeLoop(CloseParams memory p) internal {
         if (!positionOpen) revert NoOpenPosition();
 
         OpenPosition memory stored = openPosition;
@@ -352,8 +382,11 @@ contract LoopingExecutor is FlashloanBase {
 
     /**
      * @notice Swap through the configured router using owner-built calldata.
-     * @dev Only the trusted router may be targeted and the output is
-     *      slippage-checked, so arbitrary calldata cannot drain the contract.
+     * @dev The swap is bound to the active loop's asset pair when a position is
+     *      open, so arbitrary calldata cannot target an unrelated token the
+     *      contract may hold. The router may pull at most `amountIn` of
+     *      `tokenIn` (the pre-approval is exactly that), and the realized pull
+     *      is asserted so a malicious router cannot drain a residual balance.
      */
     function _swap(
         bytes memory swapData,
@@ -364,6 +397,21 @@ contract LoopingExecutor is FlashloanBase {
     ) internal returns (uint256 amountOut) {
         if (swapRouter == address(0)) revert RouterNotSet();
 
+        // When a position is open, the swap pair must match the recorded
+        // collateral/borrow assets — the open swap converts borrow->collateral
+        // and the close swap converts collateral->borrow. Anything else would
+        // let the calldata target an unrelated token the contract holds.
+        if (positionOpen) {
+            OpenPosition memory stored = openPosition;
+            if (tokenIn != stored.borrowAsset && tokenIn != stored.collateralAsset) {
+                revert SwapTokenMismatch(stored.borrowAsset, tokenIn);
+            }
+            if (tokenOut != stored.collateralAsset && tokenOut != stored.borrowAsset) {
+                revert SwapTokenMismatch(stored.collateralAsset, tokenOut);
+            }
+        }
+
+        uint256 tokenInBefore = IERC20(tokenIn).balanceOf(address(this));
         IERC20(tokenIn).forceApprove(swapRouter, amountIn);
         uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
 
@@ -373,6 +421,10 @@ contract LoopingExecutor is FlashloanBase {
                 revert(add(returndata, 32), mload(returndata))
             }
         }
+
+        // The router may only pull what we approved, and no more than amountIn.
+        uint256 pulled = tokenInBefore - IERC20(tokenIn).balanceOf(address(this));
+        if (pulled > amountIn) revert SwapExcessPulled(pulled, amountIn);
 
         amountOut = IERC20(tokenOut).balanceOf(address(this)) - balanceBefore;
         // Reset the router allowance so no residual approval lingers between swaps.
@@ -494,8 +546,37 @@ contract LoopingExecutor is FlashloanBase {
         emit MinHealthFactorUpdated(_minHealthFactor);
     }
 
+    /**
+     * @notice Update the critical health factor that permits a keeper deleverage.
+     * @param _criticalHealthFactor WAD units; must be at least MIN_HEALTH_FACTOR_FLOOR.
+     */
+    function setCriticalHealthFactor(uint256 _criticalHealthFactor) external onlyOwner {
+        if (_criticalHealthFactor < MIN_HEALTH_FACTOR_FLOOR) {
+            revert HealthFactorFloorTooLow(_criticalHealthFactor, MIN_HEALTH_FACTOR_FLOOR);
+        }
+        criticalHealthFactor = _criticalHealthFactor;
+        emit CriticalHealthFactorUpdated(_criticalHealthFactor);
+    }
+
     /// @notice Join an e-mode category on the lending pool (e.g. correlated ETH assets)
     function setEMode(uint8 categoryId) external onlyOwner {
         lendingPool.setUserEMode(categoryId);
+    }
+
+    /**
+     * @notice Rescue tokens stuck on the contract.
+     * @dev Forbids withdrawing the collateral or borrow asset of an open loop,
+     *      which would leave the position under-collateralized and un-closeable
+     *      via the normal flashloan unwind.
+     */
+    function emergencyWithdraw(address token, uint256 amount) external override onlyOwner {
+        if (positionOpen) {
+            OpenPosition memory stored = openPosition;
+            if (token == stored.collateralAsset || token == stored.borrowAsset) {
+                revert CannotWithdrawActiveAsset(token);
+            }
+        }
+        IERC20(token).safeTransfer(owner(), amount);
+        emit EmergencyWithdraw(token, amount, owner());
     }
 }

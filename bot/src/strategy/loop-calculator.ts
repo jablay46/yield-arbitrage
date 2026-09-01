@@ -94,3 +94,44 @@ export function liquidationBuffer(
   // drop fraction = 1 - (D / LT) / C = 1 - (L-1) / (L * LT)
   return 1 - (leverage - 1) / (leverage * lt);
 }
+
+/**
+ * Minimum acceptable swap output for a cross-asset open, derived from the
+ * oracle-implied fair value with a slippage tolerance. For same-asset loops
+ * there is no swap and the caller passes 0.
+ *
+ *   fairOut = amountIn * priceIn / priceOut * 10^(decOut - decIn)
+ *   minOut  = fairOut * (1 - slippageBps / 10000)
+ *
+ * Returns a bigint in `tokenOut` units. Uses integer math so it is safe to
+ * unit-test deterministically.
+ *
+ * @param amountIn       Input amount (tokenIn units).
+ * @param priceIn        Oracle price of tokenIn (1e8 scaled, like Aave oracle).
+ * @param priceOut       Oracle price of tokenOut (1e8 scaled).
+ * @param decimalsIn     ERC20 decimals of tokenIn.
+ * @param decimalsOut    ERC20 decimals of tokenOut.
+ * @param slippageBps    Tolerated slippage in basis points (e.g. 50 = 0.5%).
+ */
+export function minSwapOutFromOracle(
+  amountIn: bigint,
+  priceIn: bigint,
+  priceOut: bigint,
+  decimalsIn: number,
+  decimalsOut: number,
+  slippageBps: number,
+): bigint {
+  // fair = amountIn * priceIn / priceOut, then adjust for decimal difference.
+  const fairValue =
+    (amountIn * priceIn) / priceOut;
+  let fairOut: bigint;
+  if (decimalsOut > decimalsIn) {
+    fairOut = fairValue * 10n ** BigInt(decimalsOut - decimalsIn);
+  } else if (decimalsIn > decimalsOut) {
+    fairOut = fairValue / 10n ** BigInt(decimalsIn - decimalsOut);
+  } else {
+    fairOut = fairValue;
+  }
+  const factor = BigInt(BPS_DENOMINATOR - slippageBps);
+  return (fairOut * factor) / BigInt(BPS_DENOMINATOR);
+}
