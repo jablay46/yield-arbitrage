@@ -140,18 +140,24 @@ export class LoopingBot {
 
   /**
    * Start the bot's monitoring and trading loops.
-   * Initiates periodic rate monitoring and health checking.
+   * Initiates periodic rate monitoring and health checking. Startup
+   * reconciliation of the persisted position is awaited before any trading
+   * cycle is allowed, so a stale-position reconcile cannot race and erase a
+   * newly opened position.
    */
-  start(): void {
+  async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
 
-    // Reconcile the recovered in-memory open position with the on-chain flag.
-    // A persisted file saying "open" while the contract says "closed" means a
-    // close happened out-of-band (or the file is stale); drop it so we don't
-    // act on ghost state. Conversely, if the file is empty but the contract is
-    // open, we cannot compute PnL but we can still close via getOpenPositionAssets.
-    void this.reconcileOpenPosition();
+    // Reconcile the recovered in-memory open position with the on-chain flag
+    // before trading begins. A persisted file saying "open" while the
+    // contract says "closed" means a close happened out-of-band (or the file
+    // is stale); drop it so we don't act on ghost state. Conversely, if the
+    // file is empty but the contract is open, we cannot compute PnL but we
+    // can still close via getOpenPositionAssets. Doing this first (and
+    // awaiting it) prevents a concurrent first cycle from opening a position
+    // that reconciliation would then wipe.
+    await this.reconcileOpenPosition();
 
     this.logger.info('Starting looping bot', {
       network: this.config.network,
@@ -537,7 +543,7 @@ export async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  bot.start();
+  await bot.start();
 }
 
 if (require.main === module) {

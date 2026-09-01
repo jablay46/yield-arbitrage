@@ -11,21 +11,21 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 ## Build / test commands
 
 - `forge build` — compiles contracts (warnings are lint notes, not errors).
-- `forge test` — full Base fork suite (19/19). Needs `BASE_RPC_URL`; `FORK_BLOCK` is optional (defaults to 50M). Tests pass at the pinned block and at the latest block.
-- `cd bot && npm run build && npm test` — bot type-check + 60 unit tests.
+- `forge test` — full Base fork suite (35/35). Needs `BASE_RPC_URL`; `FORK_BLOCK` is optional (defaults to 50M). Tests pass at the pinned block and at the latest block.
+- `cd bot && npm run build && npm test` — bot type-check + 70 unit tests.
 
 ## Known test caveats
 
-- The suite is **green**: `forge test` 19/19 and bot `npm test` 60/60, both at the pinned `FORK_BLOCK=50000000` and at the latest Base block. Earlier notes about `test_openLoop_2x_aave_source` failing are obsolete — pinning `evm_version = "prague"` (in `foundry.toml`) activates the opcodes the Aave Pool uses, and the Aave-source path now passes.
+- The suite is **green**: `forge test` 35/35 and bot `npm test` 70/70, both at the pinned `FORK_BLOCK=50000000` and at the latest Base block. Earlier notes about `test_openLoop_2x_aave_source` failing are obsolete — pinning `evm_version = "prague"` (in `foundry.toml`) activates the opcodes the Aave Pool uses, and the Aave-source path now passes.
 - `FORK_BLOCK` is optional: omit it to fork latest, or set it for reproducibility. Both modes pass.
 
 ## Architecture pointers
 
-- `contracts/LoopingExecutor.sol` — leveraged open/close via Morpho (primary, 0 fee) or Aave flashloan. Persists the opened asset pair in `openPosition` and validates `closeLoop` against it.
+- `contracts/LoopingExecutor.sol` — leveraged open/close via Morpho (primary, 0 fee) or Aave flashloan. Persists the opened asset pair in `openPosition` and validates `closeLoop` against it. The health-factor floor is enforced both in `setMinHealthFactor` and in `_executeOpen` (per-call overrides are clamped up to `MIN_HEALTH_FACTOR_FLOOR`). `keeperDeleverage` is intentionally **not** `whenNotPaused`, so a paused executor (rate-feed circuit breaker) can still wind down a critical position; on a cross-asset close it enforces an oracle-derived `minSwapOut` (5% slippage) so a malicious keeper can't pair adverse router calldata with a zero floor.
 - `contracts/security/SecurityUtils.sol` — two-step ownership (`Ownable2Step`), `ReentrancyGuard`, `Pausable`. `renounceOwnership` clears `pendingOwner`; `transferOwnership(address(0))` cancels a pending transfer.
 - `bot/src/strategy/find-candidates.ts` — ranks loop candidates; liquidity is checked per leverage level, not only at 5x.
 - `bot/src/monitor/rate-monitor.ts` — multicalls reserve + config + aToken balanceOf + variableDebtToken totalSupply; `utilizationBps` derived from debt/(debt+liquidity).
-- `bot/src/orchestrator/tx-builder.ts` — simulates then sends using the simulation `request` and `estimateContractGas` + `applyGasBuffer`. Exposes `setEMode` for the e-mode preflight.
+- `bot/src/orchestrator/tx-builder.ts` — simulates then sends via raw `sendTransaction` with an explicit, rollback-on-failure nonce tracker. RBF replacement resubmits the encoded `to`/`data` (same calldata), re-applies the `maxGasPriceGwei` cap, and renews the receipt deadline. Exposes `setEMode` for the e-mode preflight.
 - `bot/src/index.ts` `maybeOpen` — e-mode preflight: when the best candidate needs ETH-correlated e-mode (5x), the bot calls `setEMode(1)` on the executor before approve/open, so the operator doesn't have to remember a manual step.
 
 ## Style

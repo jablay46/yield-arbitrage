@@ -112,6 +112,57 @@ function envOrFile<T>(envVal: T | undefined, fileVal: T | undefined): T | undefi
 }
 
 /**
+ * Parse a boolean from a file value, accepting only real JSON booleans.
+ * A string like "false" is truthy under JavaScript coercion, so malformed
+ * file configs must be rejected rather than silently enabled.
+ * @throws Error if the value is not a JSON boolean.
+ */
+function boolFromFile(v: unknown): boolean {
+  if (typeof v === 'boolean') return v;
+  throw new Error(
+    `invalid boolean file value: expected true/false, got ${JSON.stringify(v)}`
+  );
+}
+
+/**
+ * Convert a file-sourced value to a bigint from a decimal string or a safe
+ * JSON number. JSON numbers above Number.MAX_SAFE_INTEGER lose precision
+ * under JSON.parse before BigInt conversion, so a numeric representation is
+ * rejected and a canonical decimal string is required for token amounts.
+ */
+function wadFromFile(v: unknown): bigint | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'string' && v.trim() !== '') return BigInt(v);
+  if (typeof v === 'number' && Number.isInteger(v) && Math.abs(v) <= Number.MAX_SAFE_INTEGER) {
+    return BigInt(v);
+  }
+  throw new Error(
+    `invalid WAD file value: expected a decimal string, got ${JSON.stringify(v)}`
+  );
+}
+
+/**
+ * Convert a file-sourced token amount to a bigint. JSON numbers above
+ * Number.MAX_SAFE_INTEGER are silently rounded by JSON.parse, so only a
+ * canonical decimal string is accepted for amounts that must be exact.
+ */
+function tokenAmountFromFile(v: unknown): bigint | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'string' && v.trim() !== '') {
+    try {
+      return BigInt(v);
+    } catch {
+      throw new Error(`invalid token amount string: ${JSON.stringify(v)}`);
+    }
+  }
+  throw new Error(
+    `invalid token amount file value: expected a decimal string, got ${JSON.stringify(v)}`
+  );
+}
+
+/**
  * Load and validate config from an optional JSON file plus environment
  * variables. Env values override file values for every overlapping key, and
  * secrets (e.g. EXECUTOR_PRIVATE_KEY) should only ever come from env.
@@ -135,24 +186,30 @@ export function loadConfig(
     marginAsset: envOrFile(env.MARGIN_ASSET, file.marginAsset),
     marginAmount: env.MARGIN_AMOUNT
       ? BigInt(env.MARGIN_AMOUNT)
-      : file.marginAmount !== undefined
-        ? BigInt(file.marginAmount as string | number | bigint)
-        : undefined,
+      : tokenAmountFromFile(file.marginAmount),
     leverage: env.LEVERAGE ? Number(env.LEVERAGE) : file.leverage,
-    dryRun: boolFromEnv(env.DRY_RUN, Boolean(file.dryRun ?? true)),
-    autoTrade: boolFromEnv(env.AUTO_TRADE, Boolean(file.autoTrade ?? false)),
+    dryRun: env.DRY_RUN !== undefined
+      ? boolFromEnv(env.DRY_RUN, true)
+      : file.dryRun !== undefined
+        ? boolFromFile(file.dryRun)
+        : true,
+    autoTrade: env.AUTO_TRADE !== undefined
+      ? boolFromEnv(env.AUTO_TRADE, false)
+      : file.autoTrade !== undefined
+        ? boolFromFile(file.autoTrade)
+        : false,
     minNetApyBps: env.MIN_NET_APY_BPS
       ? Number(env.MIN_NET_APY_BPS)
       : file.minNetApyBps,
     minHealthFactorWad: env.MIN_HEALTH_FACTOR_WAD
       ? BigInt(env.MIN_HEALTH_FACTOR_WAD)
-      : file.minHealthFactorWad,
+      : wadFromFile(file.minHealthFactorWad),
     healthFactorWarnWad: env.HEALTH_FACTOR_WARN_WAD
       ? BigInt(env.HEALTH_FACTOR_WARN_WAD)
-      : file.healthFactorWarnWad,
+      : wadFromFile(file.healthFactorWarnWad),
     healthFactorCriticalWad: env.HEALTH_FACTOR_CRITICAL_WAD
       ? BigInt(env.HEALTH_FACTOR_CRITICAL_WAD)
-      : file.healthFactorCriticalWad,
+      : wadFromFile(file.healthFactorCriticalWad),
     pollIntervalMs: env.POLL_INTERVAL_MS
       ? Number(env.POLL_INTERVAL_MS)
       : file.pollIntervalMs,
@@ -162,7 +219,9 @@ export function loadConfig(
     cooldownMs: env.COOLDOWN_MS ? Number(env.COOLDOWN_MS) : file.cooldownMs,
     usePendingBlock: env.USE_PENDING_BLOCK
       ? boolFromEnv(env.USE_PENDING_BLOCK, true)
-      : file.usePendingBlock,
+      : file.usePendingBlock !== undefined
+        ? boolFromFile(file.usePendingBlock)
+        : true,
     maxMarginUsd: env.MAX_MARGIN_USD
       ? Number(env.MAX_MARGIN_USD)
       : file.maxMarginUsd,

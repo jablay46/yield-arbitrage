@@ -101,6 +101,14 @@ export class GasStrategy {
   }
 
   /**
+   * Hard cap on maxFeePerGas, derived from the configured max gas price.
+   * @returns The capped maxFeePerGas in wei.
+   */
+  maxFeeCap(): bigint {
+    return BigInt(Math.round(this.config.maxGasPriceGwei * 1e9));
+  }
+
+  /**
    * Check if the current gas price is favorable (less than half of max cap).
    * @returns True if gas price is favorable for submitting transactions
    */

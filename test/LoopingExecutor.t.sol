@@ -341,6 +341,22 @@ contract LoopingExecutorForkTest is Test {
         executor.setMinHealthFactor(1.1e18);
     }
 
+    // ---------- per-call floor bypass ----------
+
+    function test_openLoop_rejects_perCall_HF_below_floor() public {
+        // A per-call minHealthFactor below the absolute floor must be clamped
+        // up to the floor, so a near-liquidation open cannot slip through.
+        // Here the floor (1.01e18) is below the realized HF of a 2x loop, so
+        // the open still succeeds — verifying the clamp does not over-reject.
+        executor.openLoop(_params(2, 1 ether, 1e18)); // 1e18 < floor
+        assertTrue(executor.positionOpen());
+        assertGe(
+            executor.currentHealthFactor(),
+            executor.MIN_HEALTH_FACTOR_FLOOR(),
+            "floor enforced"
+        );
+    }
+
     // ---------- keeper deleverage & critical HF ----------
 
     function test_setCriticalHealthFactor_reverts_below_floor() public {
@@ -373,7 +389,7 @@ contract LoopingExecutorForkTest is Test {
         });
         vm.prank(address(0xCAFE001));
         vm.expectRevert(
-            abi.encodeWithSelector(LoopingExecutor.HealthFactorTooLow.selector, executor.criticalHealthFactor(), executor.currentHealthFactor())
+            abi.encodeWithSelector(LoopingExecutor.HealthFactorNotCritical.selector, executor.currentHealthFactor(), executor.criticalHealthFactor())
         );
         executor.keeperDeleverage(cp);
         // Position must remain open.
@@ -416,7 +432,9 @@ contract LoopingExecutorForkTest is Test {
         assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
     }
 
-    function test_keeperDeleverage_blocks_when_paused() public {
+    function test_keeperDeleverage_works_when_paused() public {
+        // A paused executor (e.g. rate-feed circuit breaker) must not strand an
+        // active critical position: the keeper emergency exit stays available.
         executor.openLoop(_params(2, 1 ether, 0));
         uint256 hf = executor.currentHealthFactor();
         executor.setCriticalHealthFactor(hf + 1);
@@ -429,8 +447,11 @@ contract LoopingExecutorForkTest is Test {
             minSwapOut: 0
         });
         vm.prank(address(0xCAFE001));
-        vm.expectRevert();
         executor.keeperDeleverage(cp);
+
+        assertFalse(executor.positionOpen());
+        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
     }
 
     // ---------- emergencyWithdraw guard ----------

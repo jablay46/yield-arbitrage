@@ -84,4 +84,12 @@ describe('loop-calculator', () => {
     const minOut = minSwapOutFromOracle(1000n, 1n, 1n, 18, 18, 100);
     expect(minOut).toBe(990n);
   });
+
+  it('preserves fractional output when scaling up decimals (no truncation)', () => {
+    // One base unit of a 6-decimal $1 token into an 18-decimal $2000 token.
+    // fair = 1 * 1e8 / (2000e8) = 1/2000 = 0.0005; scaled up by 1e12 gives
+    // 5e8 wei. The old order divided first (0) then scaled -> 0 (understated).
+    const minOut = minSwapOutFromOracle(1n, 100_000_000n, 200_000_000_000n, 6, 18, 0);
+    expect(minOut).toBe(500_000_000n); // 0.0005 of the 18-decimal out token
+  });
 });

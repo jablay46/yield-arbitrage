@@ -122,15 +122,17 @@ export function minSwapOutFromOracle(
   slippageBps: number,
 ): bigint {
   // fair = amountIn * priceIn / priceOut, then adjust for decimal difference.
-  const fairValue =
-    (amountIn * priceIn) / priceOut;
+  // Scale the numerator before dividing so a positive decimal adjustment
+  // (decimalsOut > decimalsIn) does not truncate the fractional output to zero.
   let fairOut: bigint;
   if (decimalsOut > decimalsIn) {
-    fairOut = fairValue * 10n ** BigInt(decimalsOut - decimalsIn);
+    const scale = 10n ** BigInt(decimalsOut - decimalsIn);
+    fairOut = (amountIn * priceIn * scale) / priceOut;
   } else if (decimalsIn > decimalsOut) {
-    fairOut = fairValue / 10n ** BigInt(decimalsIn - decimalsOut);
+    const scale = 10n ** BigInt(decimalsIn - decimalsOut);
+    fairOut = (amountIn * priceIn) / (priceOut * scale);
   } else {
-    fairOut = fairValue;
+    fairOut = (amountIn * priceIn) / priceOut;
   }
   const factor = BigInt(BPS_DENOMINATOR - slippageBps);
   return (fairOut * factor) / BigInt(BPS_DENOMINATOR);

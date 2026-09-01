@@ -87,8 +87,9 @@ export class HealthMonitor {
   }
 
   /**
-   * Check if the executor is paused.
-   * @returns True if the executor contract is currently paused.
+   * @returns Whether the executor contract is paused. The bot treats a pause
+   *          as fail-closed (no opens), but the keeper emergency exit remains
+   *          callable while paused so a critical position can still be wound down.
    */
   async isPaused(): Promise<boolean> {
     return this.client.readContract({

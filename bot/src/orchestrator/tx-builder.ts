@@ -1,5 +1,6 @@
 import { Account, Address, Hex } from 'viem';
 import { base } from 'viem/chains';
+import { encodeFunctionData } from 'viem';
 import { BasePublicClient, BaseWalletClient } from '../client-types';
 import { loopingExecutorAbi } from '../abis';
 import { GasStrategy, GasFees } from '../utils/gas-strategy';
@@ -25,6 +26,12 @@ export interface CloseLoopRequest {
 export interface SentTx {
   hash: Hex;
   gasUsed?: bigint;
+}
+
+/** An encoded contract call ready to be (re)submitted as a raw transaction. */
+interface EncodedTx {
+  to: Address;
+  data: Hex;
 }
 
 /**
@@ -140,10 +147,8 @@ export class TransactionBuilder {
   async approveMargin(token: Address, amount: bigint): Promise<SentTx> {
     this.logger.info(`Approving ${amount} of ${token} to executor`);
     const fees = await this.gas.getFees();
-    const nonce = await this.nextNonce();
-    const hash = await this.walletClient.writeContract({
+    const gasEstimate = await this.publicClient.estimateContractGas({
       account: this.account,
-      chain: base,
       address: token,
       abi: [
         {
@@ -159,10 +164,45 @@ export class TransactionBuilder {
       ],
       functionName: 'approve',
       args: [this.executor, amount],
-      nonce: Number(nonce),
-      ...fees,
+      blockTag: this.usePendingBlock ? 'pending' : undefined,
+    } as never);
+
+    const nonce = await this.nextNonce();
+    const encoded = await this.encodeCall({
+      abi: [
+        {
+          name: 'approve',
+          type: 'function',
+          stateMutability: 'nonpayable',
+          inputs: [
+            { name: 'spender', type: 'address' },
+            { name: 'amount', type: 'uint256' },
+          ],
+          outputs: [{ type: 'bool' }],
+        },
+      ],
+      functionName: 'approve',
+      args: [this.executor, amount],
+      to: token,
     });
-    return this.waitAndCheck(hash, nonce, fees, 0n, {});
+
+    let hash: Hex;
+    try {
+      hash = await this.walletClient.sendTransaction({
+        account: this.account,
+        chain: base,
+        to: encoded.to,
+        data: encoded.data,
+        nonce: Number(nonce),
+        gas: this.gas.applyGasBuffer(gasEstimate),
+        ...fees,
+      } as never);
+    } catch (err) {
+      this.rollbackNonce();
+      throw err;
+    }
+    this.logger.info(`Tx sent: ${hash} (nonce ${nonce})`);
+    return this.waitAndCheck(hash, nonce, fees, gasEstimate, encoded);
   }
 
   /**
@@ -206,8 +246,10 @@ export class TransactionBuilder {
   /**
    * Simulate a contract call, estimate gas, and send the transaction.
    * Simulation occurs against the pending block; a revert here means the tx
-   * would fail on-chain and it never reaches the mempool. The simulation's
-   * request is forwarded to writeContract so encoded args match exactly.
+   * would fail on-chain and it never reaches the mempool. The call is encoded
+   * to raw `to`/`data` once so an RBF replacement resubmits the exact same
+   * calldata (not a malformed/no-op tx), and a failed submission rolls back the
+   * nonce so a gap never stalls subsequent sends.
    * @param call - Contract call object with account, address, abi, function, and args
    * @returns Transaction hash and gas used
    */
@@ -232,20 +274,54 @@ export class TransactionBuilder {
       blockTag: this.usePendingBlock ? 'pending' : undefined,
     } as never);
 
+    const encoded = await this.encodeCall({
+      abi: request.abi,
+      functionName: request.functionName as never,
+      args: (request.args as readonly unknown[]) ?? [],
+      to: (request.address as Address) ?? this.executor,
+    });
+
     // Use an explicit nonce so concurrent cycles cannot collide on the same
     // nonce the wallet client would otherwise pick lazily.
     const nonce = await this.nextNonce();
 
-    const hash = await this.walletClient.writeContract({
-      ...request,
-      chain: base,
-      ...fees,
-      nonce: Number(nonce),
-      gas: this.gas.applyGasBuffer(gasEstimate),
-    } as never);
+    let hash: Hex;
+    try {
+      hash = await this.walletClient.sendTransaction({
+        account: this.account,
+        chain: base,
+        to: encoded.to,
+        data: encoded.data,
+        nonce: Number(nonce),
+        gas: this.gas.applyGasBuffer(gasEstimate),
+        ...fees,
+      } as never);
+    } catch (err) {
+      this.rollbackNonce();
+      throw err;
+    }
 
     this.logger.info(`Tx sent: ${hash} (nonce ${nonce})`);
-    return this.waitAndCheck(hash, nonce, fees, gasEstimate, request);
+    return this.waitAndCheck(hash, nonce, fees, gasEstimate, encoded);
+  }
+
+  /**
+   * Encode a contract call into raw `to`/`data` so it can be (re)submitted as a
+   * raw transaction. Retaining the encoded calldata lets an RBF replacement
+   * resubmit the identical call instead of a bare ETH transfer.
+   */
+  private async encodeCall(input: {
+    abi: unknown;
+    functionName: string;
+    args: readonly unknown[];
+    to: Address;
+  }): Promise<EncodedTx> {
+    const data = encodeFunctionData({
+      abi: input.abi as never,
+      functionName: input.functionName as never,
+      args: input.args as never,
+    } as never);
+    return { to: input.to, data };
   }
 
   /**
@@ -267,9 +343,23 @@ export class TransactionBuilder {
   }
 
   /**
+   * Roll back the in-flight nonce tracker after a failed submission so the next
+   * send reuses the same nonce instead of skipping it and creating a gap that
+   * would stall every subsequent transaction until filled.
+   */
+  private rollbackNonce(): void {
+    if (this.inflightNonce !== undefined && this.inflightNonce > 0n) {
+      this.inflightNonce = this.inflightNonce - 1n;
+    } else {
+      this.inflightNonce = undefined;
+    }
+  }
+
+  /**
    * Wait for a transaction receipt, replacing the tx with higher fees (RBF)
-   * if it stays pending longer than the configured timeout. This prevents a
-   * stuck open/close from blocking the bot indefinitely during gas congestion.
+   * if it stays pending longer than the configured timeout. Each replacement
+   * gets a fresh confirmation window and re-capped fees so the loop cannot
+   * spin on an already-expired deadline or exceed the operator's gas cap.
    * @returns Transaction hash and gas used
    * @throws Error if the transaction reverted on-chain
    */
@@ -278,10 +368,11 @@ export class TransactionBuilder {
     nonce: bigint,
     fees: GasFees,
     gasEstimate: bigint,
-    request: Record<string, unknown>,
+    encoded: EncodedTx,
   ): Promise<SentTx> {
     let currentHash = hash;
-    const deadline = Date.now() + this.pendingTimeoutMs;
+    let currentFees = fees;
+    let deadline = Date.now() + this.pendingTimeoutMs;
 
     // Poll for a receipt, replacing the tx with higher fees if it stays
     // pending past the timeout. waitForTransactionReceipt would block
@@ -291,13 +382,18 @@ export class TransactionBuilder {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         // Replace the stuck tx with the same nonce and bumped fees (RBF).
-        currentHash = await this.replaceWithHigherFees(
+        // Renew the confirmation window so the replacement gets its own
+        // chance to land rather than re-entering the loop immediately.
+        const replaced = await this.replaceWithHigherFees(
           currentHash,
           nonce,
-          fees,
+          currentFees,
           gasEstimate,
-          request,
+          encoded,
         );
+        currentHash = replaced.hash;
+        currentFees = replaced.fees;
+        deadline = Date.now() + this.pendingTimeoutMs;
         continue;
       }
       try {
@@ -323,32 +419,47 @@ export class TransactionBuilder {
 
   /**
    * Replace a pending transaction (same nonce) with a higher-fee version.
-   * Bumps maxFeePerGas and priorityFee by the configured fraction.
+   * Bumps maxFeePerGas and priorityFee by the configured fraction, then
+   * re-applies the operator's hard gas cap so a replacement can never exceed
+   * the stated maximum. The encoded `to`/`data` of the original call is
+   * preserved so the replacement resubmits the same contract call.
    */
   private async replaceWithHigherFees(
     oldHash: Hex,
     nonce: bigint,
     fees: GasFees,
     gasEstimate: bigint,
-    request: Record<string, unknown>,
-  ): Promise<Hex> {
+    encoded: EncodedTx,
+  ): Promise<{ hash: Hex; fees: GasFees }> {
     const bump = (v: bigint) => v + (v * this.rbfBumpBps) / 100n;
-    const newFees: GasFees = {
-      maxFeePerGas: bump(fees.maxFeePerGas),
-      maxPriorityFeePerGas: bump(fees.maxPriorityFeePerGas),
-    };
+    const cap = this.gas.maxFeeCap();
+    let maxFeePerGas = bump(fees.maxFeePerGas);
+    let maxPriorityFeePerGas = bump(fees.maxPriorityFeePerGas);
+    // Re-apply the configured hard cap; if the bumped fee already exceeds it,
+    // clamp to the cap. If the original fee was already at the cap, no higher
+    // valid replacement is possible — surface the original gas unchanged so
+    // the caller can retry on the next cycle instead of overspending.
+    if (maxFeePerGas > cap) {
+      maxFeePerGas = cap;
+    }
+    if (maxPriorityFeePerGas > maxFeePerGas) {
+      maxPriorityFeePerGas = maxFeePerGas;
+    }
+    const newFees: GasFees = { maxFeePerGas, maxPriorityFeePerGas };
+
     this.logger.warn(
       `Tx ${oldHash} pending past timeout — replacing nonce ${nonce} with higher fees`,
     );
     const newHash = await this.walletClient.sendTransaction({
-      ...(request as object),
       account: this.account,
       chain: base,
+      to: encoded.to,
+      data: encoded.data,
       nonce: Number(nonce),
       ...newFees,
       gas: gasEstimate > 0n ? this.gas.applyGasBuffer(gasEstimate) : undefined,
     } as never);
     this.logger.info(`Replacement tx sent: ${newHash} (nonce ${nonce})`);
-    return newHash;
+    return { hash: newHash, fees: newFees };
   }
 }

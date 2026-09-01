@@ -142,3 +142,74 @@ describe('boolean parsing (review regression)', () => {
     expect(cfg.autoTrade).toBe(false);
   });
 });
+
+describe('file value hardening (review regression)', () => {
+  const EXEC_ADDR = '0x' + 'b'.repeat(40) as `0x${string}`;
+  const PK = '0x' + 'a'.repeat(64);
+  const baseEnv = {
+    EXECUTOR_PRIVATE_KEY: PK,
+    EXECUTOR_ADDRESS: EXEC_ADDR,
+    MARGIN_ASSET,
+  };
+
+  it('rejects a string "false" for autoTrade in the file (no truthy coercion)', () => {
+    const tmp = `/tmp/bot-cfg-${Date.now()}.json`;
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({ marginAmount: '1000000000000000000', autoTrade: 'false' }),
+    );
+    try {
+      expect(() => loadConfig({ ...baseEnv }, tmp)).toThrow(/invalid boolean file value/);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it('accepts a real boolean for autoTrade in the file', () => {
+    const tmp = `/tmp/bot-cfg-${Date.now()}.json`;
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({ marginAmount: '1000000000000000000', autoTrade: true }),
+    );
+    try {
+      const cfg = loadConfig({ ...baseEnv }, tmp);
+      expect(cfg.autoTrade).toBe(true);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it('accepts a WAD decimal string from the file', () => {
+    const tmp = `/tmp/bot-cfg-${Date.now()}.json`;
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({
+        marginAmount: '1000000000000000000',
+        minHealthFactorWad: '1100000000000000000',
+      }),
+    );
+    try {
+      const cfg = loadConfig({ ...baseEnv }, tmp);
+      expect(cfg.minHealthFactorWad).toBe(1_100_000_000_000_000_000n);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+
+  it('rejects a numeric margin amount above MAX_SAFE_INTEGER in the file', () => {
+    const tmp = `/tmp/bot-cfg-${Date.now()}.json`;
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.writeFileSync(
+      tmp,
+      JSON.stringify({ marginAmount: 1e21 }), // > MAX_SAFE_INTEGER, would be rounded
+    );
+    try {
+      expect(() => loadConfig({ ...baseEnv }, tmp)).toThrow(/invalid token amount file value/);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  });
+});
