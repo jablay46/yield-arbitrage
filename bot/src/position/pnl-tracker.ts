@@ -36,11 +36,18 @@ export class PnLTracker {
   private records: PnLRecord[] = [];
   private filePath: string;
 
+  /**
+   * Create a new PnLTracker instance and load existing records from disk.
+   * @param filePath - Path to the JSON file for persisting PnL records
+   */
   constructor(filePath: string) {
     this.filePath = filePath;
     this.load();
   }
 
+  /**
+   * Load PnL records from the JSON file. Silently starts fresh if file is missing or corrupt.
+   */
   private load(): void {
     try {
       if (fs.existsSync(this.filePath)) {
@@ -54,21 +61,36 @@ export class PnLTracker {
     }
   }
 
+  /**
+   * Save the current PnL records to disk as JSON.
+   */
   private save(): void {
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this.filePath, JSON.stringify(this.records, null, 2));
   }
 
+  /**
+   * Add a new PnL record and persist to disk.
+   * @param record - The PnL record for a closed position
+   */
   record(record: PnLRecord): void {
     this.records.push(record);
     this.save();
   }
 
+  /**
+   * Get all PnL records.
+   * @returns A copy of all PnL records
+   */
   getRecords(): PnLRecord[] {
     return [...this.records];
   }
 
+  /**
+   * Calculate summary statistics across all PnL records.
+   * @returns PnL summary with totals and averages
+   */
   getSummary(): PnLSummary {
     if (this.records.length === 0) {
       return {

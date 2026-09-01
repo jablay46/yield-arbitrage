@@ -14,6 +14,12 @@ export const dataProviderAbi = parseAbi([
   'function getReserveConfigurationData(address asset) view returns (uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen)',
 ]);
 
+/** Aave V3 PriceOracle — asset prices in USD with 8 decimals. */
+export const aaveOracleAbi = parseAbi([
+  'function getAssetPrice(address asset) view returns (uint256)',
+  'function getAssetsPrices(address[] assets) view returns (uint256[])',
+]);
+
 export const erc20Abi = parseAbi([
   'function balanceOf(address) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -29,6 +35,7 @@ export const loopingExecutorAbi = parseAbi([
   'function closeLoop((address collateralAsset, address borrowAsset, bytes swapData, uint256 minSwapOut))',
   'function currentDebt(address asset) view returns (uint256)',
   'function currentHealthFactor() view returns (uint256)',
+  'function openPosition() view returns (address collateralAsset, address borrowAsset, uint8 leverage)',
   'function positionOpen() view returns (bool)',
   'function paused() view returns (bool)',
   'function owner() view returns (address)',

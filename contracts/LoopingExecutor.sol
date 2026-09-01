@@ -453,7 +453,7 @@ contract LoopingExecutor is FlashloanBase {
     function _sweep(address token) internal {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(owner, balance);
+            IERC20(token).safeTransfer(owner(), balance);
         }
     }
 
@@ -471,6 +471,7 @@ contract LoopingExecutor is FlashloanBase {
      * @param _swapRouter The new swap router address
      */
     function setSwapRouter(address _swapRouter) external onlyOwner {
+        if (_swapRouter == address(0)) revert ZeroAddress();
         swapRouter = _swapRouter;
         emit SwapRouterUpdated(_swapRouter);
     }

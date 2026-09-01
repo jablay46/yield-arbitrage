@@ -1,6 +1,6 @@
 import { Address } from 'viem';
 import { BasePublicClient } from '../client-types';
-import { aavePoolAbi, dataProviderAbi, erc20Abi } from '../abis';
+import { aavePoolAbi, aaveOracleAbi, dataProviderAbi, erc20Abi } from '../abis';
 import {
   ADDRESSES,
   EMODE,
@@ -8,6 +8,9 @@ import {
   TOKEN_DECIMALS,
   SECONDS_PER_YEAR,
 } from '../config/constants';
+
+/** Aave oracle prices are USD with 8 decimals. */
+export const ORACLE_USD_DECIMALS = 8;
 
 /**
  * On-chain rate for a single Aave V3 reserve.
@@ -36,14 +39,22 @@ export interface EModeCategoryData {
 
 const RAY_NUMBER = 1e27;
 
-/** Aave rates are ray-scaled per-second APR; convert to APY bps. */
+/**
+ * Convert Aave ray-scaled per-second rate to annualized APY in basis points.
+ * @param rateRay - The ray-scaled rate (1e27 = 1)
+ * @returns APY in basis points (10000 = 100%)
+ */
 export function rayRateToApyBps(rateRay: bigint): number {
   const apr = Number(rateRay) / RAY_NUMBER;
   const apy = Math.pow(1 + apr / SECONDS_PER_YEAR, SECONDS_PER_YEAR) - 1;
   return apy * 10000;
 }
 
-/** Aave variable borrow rate (ray per-second) to APR bps. */
+/**
+ * Convert Aave variable borrow rate (ray per-second) to APR in basis points.
+ * @param rateRay - The ray-scaled rate (1e27 = 1)
+ * @returns APR in basis points (10000 = 100%)
+ */
 export function rayRateToAprBps(rateRay: bigint): number {
   return (Number(rateRay) / RAY_NUMBER) * 10000;
 }
@@ -56,13 +67,27 @@ export class RateMonitor {
   private client: BasePublicClient;
   private watchlist: Address[];
   private eModeCategory?: Promise<EModeCategoryData>;
+  /** Cached oracle price (USD, 8 decimals) keyed by asset address (lowercase). */
+  private priceCache = new Map<string, { price: number; ts: number }>();
+  /** Cache TTL in ms; 0 disables caching. */
+  private priceCacheTtlMs: number;
 
-  constructor(client: BasePublicClient, watchlist?: Address[]) {
+  /**
+   * Create a new RateMonitor instance.
+   * @param client - The viem public client for reading on-chain data
+   * @param watchlist - Optional list of token addresses to monitor (defaults to all TOKENS)
+   * @param priceCacheTtlMs - Cache TTL for oracle prices in milliseconds (0 = no caching)
+   */
+  constructor(client: BasePublicClient, watchlist?: Address[], priceCacheTtlMs = 0) {
     this.client = client;
     this.watchlist = watchlist ?? (Object.values(TOKENS) as Address[]);
+    this.priceCacheTtlMs = priceCacheTtlMs;
   }
 
-  /** Fetch and cache the ETH-correlated e-mode limits for this bot run. */
+  /**
+   * Fetch and cache the ETH-correlated e-mode category data from Aave.
+   * @returns The e-mode category configuration with LTV and liquidation threshold
+   */
   async getEModeCategoryData(): Promise<EModeCategoryData> {
     if (!this.eModeCategory) {
       this.eModeCategory = this.client
@@ -94,6 +119,10 @@ export class RateMonitor {
     return this.eModeCategory;
   }
 
+  /**
+   * Fetch current rates, liquidity, and configuration for all watchlist assets.
+   * @returns Array of market rates for active, unfrozen reserves with borrowing enabled
+   */
   async getAllRates(): Promise<MarketRate[]> {
     const n = this.watchlist.length;
 
@@ -159,22 +188,23 @@ export class RateMonitor {
         : Promise.resolve([]),
     ]);
 
+    // Fail-closed: a failed liquidity or debt read leaves the value unknown,
+    // and the affected rate is omitted below (not treated as 0). This stops
+    // autoTrade from selecting a market on a false zero-utilization signal.
     const liquidityByReserveIndex = new Map<number, bigint>();
     liquidityIndex.forEach((reserveIdx, pos) => {
       const liqResult = liquidityResults[pos];
-      liquidityByReserveIndex.set(
-        reserveIdx,
-        liqResult?.status === 'success' ? (liqResult.result as bigint) : 0n,
-      );
+      if (liqResult?.status === 'success') {
+        liquidityByReserveIndex.set(reserveIdx, liqResult.result as bigint);
+      }
     });
 
     const debtByReserveIndex = new Map<number, bigint>();
     debtSupplyIndex.forEach((reserveIdx, pos) => {
       const debtResult = debtSupplyResults[pos];
-      debtByReserveIndex.set(
-        reserveIdx,
-        debtResult?.status === 'success' ? (debtResult.result as bigint) : 0n,
-      );
+      if (debtResult?.status === 'success') {
+        debtByReserveIndex.set(reserveIdx, debtResult.result as bigint);
+      }
     });
 
     const rates: MarketRate[] = [];
@@ -183,11 +213,20 @@ export class RateMonitor {
       const config = configResults[i];
       if (reserve.status !== 'success' || config.status !== 'success') continue;
 
+      // Omit rates with incomplete market data (failed liquidity or debt
+      // reads) rather than degrading to a 0-debt/0-liquidity signal.
+      if (
+        !liquidityByReserveIndex.has(i) ||
+        !debtByReserveIndex.has(i)
+      ) {
+        continue;
+      }
+
       const rd = reserve.result;
       const cfg = config.result;
 
-      const availableLiquidity = liquidityByReserveIndex.get(i) ?? 0n;
-      const totalDebt = debtByReserveIndex.get(i) ?? 0n;
+      const availableLiquidity = liquidityByReserveIndex.get(i)!;
+      const totalDebt = debtByReserveIndex.get(i)!;
 
       const symbol = this.symbolFor(this.watchlist[i]);
 
@@ -222,8 +261,50 @@ export class RateMonitor {
     return rates;
   }
 
+  /**
+   * Resolve a human-readable symbol for a token address.
+   * @param asset - The token address
+   * @returns The token symbol if found in TOKENS, otherwise a truncated address
+   */
   private symbolFor(asset: Address): string {
     const entry = Object.entries(TOKENS).find(([, a]) => a === asset);
     return entry ? entry[0] : asset.slice(0, 8);
+  }
+
+  /**
+   * USD price (8-decimal oracle units) of an asset from the Aave PriceOracle.
+   * Returns a plain JS number. Results are cached for `priceCacheTtlMs` so
+   * repeated valuation within one poll window doesn't add an RPC round-trip.
+   */
+  async getAssetPriceUsd(asset: Address): Promise<number> {
+    const key = asset.toLowerCase();
+    const now = Date.now();
+    const hit = this.priceCache.get(key);
+    if (hit && this.priceCacheTtlMs > 0 && now - hit.ts < this.priceCacheTtlMs) {
+      return hit.price;
+    }
+
+    const price = await this.client.readContract({
+      address: ADDRESSES.aaveOracle as Address,
+      abi: aaveOracleAbi,
+      functionName: 'getAssetPrice',
+      args: [asset],
+    });
+    const priceUsd = Number(price) / 10 ** ORACLE_USD_DECIMALS;
+    this.priceCache.set(key, { price: priceUsd, ts: now });
+    return priceUsd;
+  }
+
+  /**
+   * USD value of a token `amount` (smallest-unit bigint) at the oracle price.
+   * decimals is the token's decimals (e.g. 18 for WETH, 6 for USDC).
+   */
+  async tokenAmountToUsd(
+    asset: Address,
+    amount: bigint,
+    decimals: number,
+  ): Promise<number> {
+    const priceUsd = await this.getAssetPriceUsd(asset);
+    return (Number(amount) / 10 ** decimals) * priceUsd;
   }
 }

@@ -63,7 +63,8 @@ describe('RiskEngine', () => {
     const pos = engine.recordOpen(goodCandidate, 1000n, '0xabc');
     expect(engine.getOpenPositions()).toHaveLength(1);
 
-    engine.recordClose(pos.id, '0xdef', 12.5);
+    engine.recordClose(pos.id, '0xdef');
+    engine.recordRealizedPnl(pos.id, 12.5);
     expect(engine.getOpenPositions()).toHaveLength(0);
     const closed = engine.getAllPositions()[0];
     expect(closed.status).toBe('closed');

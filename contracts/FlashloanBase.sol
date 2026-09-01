@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 import {IFlashLoanReceiver} from "./interfaces/IFlashLoanReceiver.sol";
 import {IAavePool} from "./interfaces/IAavePool.sol";
@@ -58,7 +59,7 @@ abstract contract FlashloanBase is
         address indexed to
     );
 
-    constructor(address _morpho, address _aavePool) {
+    constructor(address _morpho, address _aavePool) Ownable(msg.sender) {
         if (_morpho == address(0) || _aavePool == address(0)) {
             revert ZeroAddress();
         }
@@ -187,7 +188,7 @@ abstract contract FlashloanBase is
      * @notice Rescue tokens stuck on the contract
      */
     function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
-        IERC20(token).safeTransfer(owner, amount);
-        emit EmergencyWithdraw(token, amount, owner);
+        IERC20(token).safeTransfer(owner(), amount);
+        emit EmergencyWithdraw(token, amount, owner());
     }
 }

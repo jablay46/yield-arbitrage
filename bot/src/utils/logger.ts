@@ -1,5 +1,10 @@
 import winston from 'winston';
 
+/**
+ * Create a Winston logger instance with colorized console output.
+ * @param level - The logging level (debug, info, warn, error)
+ * @returns A configured Winston logger instance
+ */
 export function createLogger(level: string = 'info'): winston.Logger {
   return winston.createLogger({
     level,
