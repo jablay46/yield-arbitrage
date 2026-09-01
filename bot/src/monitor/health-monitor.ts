@@ -25,6 +25,15 @@ export class HealthMonitor {
   private logger: Logger;
   private usePendingBlock: boolean;
 
+  /**
+   * Create a new HealthMonitor instance.
+   * @param client - The viem public client for reading on-chain data
+   * @param executor - The LoopingExecutor contract address to monitor
+   * @param warnWad - Health factor threshold for warnings (WAD format, 1e18 = 1.0)
+   * @param criticalWad - Health factor threshold for emergency deleverage (WAD format)
+   * @param logger - Logger instance for health status messages
+   * @param usePendingBlock - Whether to read from pending block (Flashblocks on Base)
+   */
   constructor(
     client: BasePublicClient,
     executor: Address,
@@ -41,6 +50,10 @@ export class HealthMonitor {
     this.usePendingBlock = usePendingBlock;
   }
 
+  /**
+   * Capture a snapshot of the executor's current account data from Aave.
+   * @returns Health snapshot with collateral, debt, and health factor
+   */
   async snapshot(): Promise<HealthSnapshot> {
     // blockTag 'pending' = latest Flashblock on Base (~200ms fresh)
     const blockTag = this.usePendingBlock ? ('pending' as const) : undefined;
@@ -61,6 +74,10 @@ export class HealthMonitor {
     };
   }
 
+  /**
+   * Check if the executor has an open position.
+   * @returns True if a position is currently open
+   */
   async hasOpenPosition(): Promise<boolean> {
     return this.client.readContract({
       address: this.executor,
@@ -69,6 +86,10 @@ export class HealthMonitor {
     });
   }
 
+  /**
+   * Retrieve the collateral and borrow assets of the currently open position.
+   * @returns Object containing collateral and borrow asset addresses
+   */
   async getOpenPositionAssets(): Promise<{
     collateralAsset: Address;
     borrowAsset: Address;
@@ -81,6 +102,11 @@ export class HealthMonitor {
     return { collateralAsset, borrowAsset };
   }
 
+  /**
+   * Classify a health snapshot into an action category.
+   * @param s - The health snapshot to classify
+   * @returns The action to take: 'ok', 'warn', or 'deleverage'
+   */
   classify(s: HealthSnapshot): HealthAction {
     // No debt -> HF is type(uint256).max, always fine
     if (s.totalDebtBase === 0n) return 'ok';

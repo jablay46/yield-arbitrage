@@ -47,10 +47,19 @@ export class RiskEngine {
   private positions: LoopPosition[] = [];
   private lastActionAt = 0;
 
+  /**
+   * Create a new RiskEngine instance.
+   * @param params - Partial risk parameters to override defaults
+   */
   constructor(params: Partial<RiskParams> = {}) {
     this.params = { ...DEFAULT_RISK_PARAMS, ...params };
   }
 
+  /**
+   * Check if a loop candidate is allowed to be opened based on risk limits.
+   * @param candidate - The loop candidate to evaluate
+   * @returns Object indicating whether the open is allowed and the reason if not
+   */
   canOpen(candidate: CandidateLike): { allowed: boolean; reason?: string } {
     const openCount = this.positions.filter((p) => p.status === 'open').length;
     if (openCount >= this.params.maxOpenPositions) {
@@ -89,6 +98,13 @@ export class RiskEngine {
     return { allowed: true };
   }
 
+  /**
+   * Record a newly opened loop position.
+   * @param candidate - The loop candidate that was opened
+   * @param marginAmount - The margin amount in smallest token units
+   * @param txHash - Optional transaction hash for the open transaction
+   * @returns The created position record
+   */
   recordOpen(
     candidate: CandidateLike,
     marginAmount: bigint,
@@ -110,6 +126,12 @@ export class RiskEngine {
     return position;
   }
 
+  /**
+   * Record the closing of a loop position.
+   * @param positionId - The ID of the position to close
+   * @param txHash - Optional transaction hash for the close transaction
+   * @param realizedPnlUsd - Optional realized profit/loss in USD
+   */
   recordClose(
     positionId: string,
     txHash?: string,
@@ -124,23 +146,44 @@ export class RiskEngine {
     this.lastActionAt = Date.now();
   }
 
+  /**
+   * Record or update the realized PnL for a position.
+   * @param positionId - The ID of the position
+   * @param realizedPnlUsd - The realized profit/loss in USD
+   */
   recordRealizedPnl(positionId: string, realizedPnlUsd: number): void {
     const position = this.positions.find((p) => p.id === positionId);
     if (position) position.realizedPnlUsd = realizedPnlUsd;
   }
 
+  /**
+   * Get all currently open positions.
+   * @returns Array of open positions
+   */
   getOpenPositions(): LoopPosition[] {
     return this.positions.filter((p) => p.status === 'open');
   }
 
+  /**
+   * Get all positions (both open and closed).
+   * @returns Array of all positions
+   */
   getAllPositions(): LoopPosition[] {
     return [...this.positions];
   }
 
+  /**
+   * Update risk parameters.
+   * @param params - Partial risk parameters to update
+   */
   updateParams(params: Partial<RiskParams>): void {
     this.params = { ...this.params, ...params };
   }
 
+  /**
+   * Get the current risk parameters.
+   * @returns A copy of the current risk parameters
+   */
   getParams(): RiskParams {
     return { ...this.params };
   }

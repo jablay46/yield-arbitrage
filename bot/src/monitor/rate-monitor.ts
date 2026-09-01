@@ -39,14 +39,22 @@ export interface EModeCategoryData {
 
 const RAY_NUMBER = 1e27;
 
-/** Aave rates are ray-scaled per-second APR; convert to APY bps. */
+/**
+ * Convert Aave ray-scaled per-second rate to annualized APY in basis points.
+ * @param rateRay - The ray-scaled rate (1e27 = 1)
+ * @returns APY in basis points (10000 = 100%)
+ */
 export function rayRateToApyBps(rateRay: bigint): number {
   const apr = Number(rateRay) / RAY_NUMBER;
   const apy = Math.pow(1 + apr / SECONDS_PER_YEAR, SECONDS_PER_YEAR) - 1;
   return apy * 10000;
 }
 
-/** Aave variable borrow rate (ray per-second) to APR bps. */
+/**
+ * Convert Aave variable borrow rate (ray per-second) to APR in basis points.
+ * @param rateRay - The ray-scaled rate (1e27 = 1)
+ * @returns APR in basis points (10000 = 100%)
+ */
 export function rayRateToAprBps(rateRay: bigint): number {
   return (Number(rateRay) / RAY_NUMBER) * 10000;
 }
@@ -64,13 +72,22 @@ export class RateMonitor {
   /** Cache TTL in ms; 0 disables caching. */
   private priceCacheTtlMs: number;
 
+  /**
+   * Create a new RateMonitor instance.
+   * @param client - The viem public client for reading on-chain data
+   * @param watchlist - Optional list of token addresses to monitor (defaults to all TOKENS)
+   * @param priceCacheTtlMs - Cache TTL for oracle prices in milliseconds (0 = no caching)
+   */
   constructor(client: BasePublicClient, watchlist?: Address[], priceCacheTtlMs = 0) {
     this.client = client;
     this.watchlist = watchlist ?? (Object.values(TOKENS) as Address[]);
     this.priceCacheTtlMs = priceCacheTtlMs;
   }
 
-  /** Fetch and cache the ETH-correlated e-mode limits for this bot run. */
+  /**
+   * Fetch and cache the ETH-correlated e-mode category data from Aave.
+   * @returns The e-mode category configuration with LTV and liquidation threshold
+   */
   async getEModeCategoryData(): Promise<EModeCategoryData> {
     if (!this.eModeCategory) {
       this.eModeCategory = this.client
@@ -102,6 +119,10 @@ export class RateMonitor {
     return this.eModeCategory;
   }
 
+  /**
+   * Fetch current rates, liquidity, and configuration for all watchlist assets.
+   * @returns Array of market rates for active, unfrozen reserves with borrowing enabled
+   */
   async getAllRates(): Promise<MarketRate[]> {
     const n = this.watchlist.length;
 
@@ -240,6 +261,11 @@ export class RateMonitor {
     return rates;
   }
 
+  /**
+   * Resolve a human-readable symbol for a token address.
+   * @param asset - The token address
+   * @returns The token symbol if found in TOKENS, otherwise a truncated address
+   */
   private symbolFor(asset: Address): string {
     const entry = Object.entries(TOKENS).find(([, a]) => a === asset);
     return entry ? entry[0] : asset.slice(0, 8);

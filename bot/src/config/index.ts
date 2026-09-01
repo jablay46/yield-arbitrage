@@ -62,6 +62,13 @@ export const BotConfigSchema = z.object({
 
 export type BotConfig = z.infer<typeof BotConfigSchema>;
 
+/**
+ * Parse a boolean value from an environment variable string.
+ * @param v - The environment variable value
+ * @param fallback - Default value if the variable is undefined
+ * @returns The parsed boolean value
+ * @throws Error if the value is not a recognized boolean format
+ */
 function boolFromEnv(v: string | undefined, fallback: boolean): boolean {
   if (v === undefined) return fallback;
   const s = v.toLowerCase();

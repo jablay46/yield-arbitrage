@@ -127,6 +127,10 @@ export class LoopingBot {
     }
   }
 
+  /**
+   * Start the bot's monitoring and trading loops.
+   * Initiates periodic rate monitoring and health checking.
+   */
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -157,6 +161,9 @@ export class LoopingBot {
     void this.monitorCycle();
   }
 
+  /**
+   * Stop the bot and clear all timers.
+   */
   stop(): void {
     this.running = false;
     for (const t of this.timers) clearInterval(t);
@@ -193,6 +200,11 @@ export class LoopingBot {
     }
   }
 
+  /**
+   * Evaluate loop candidates and attempt to open a position if conditions are met.
+   * Respects risk limits, cooldowns, and verifies no on-chain position exists.
+   * @param candidates - Ranked loop candidates from the current rate monitor cycle
+   */
   private async maybeOpen(candidates: LoopCandidate[]): Promise<void> {
     if (this.riskEngine.getOpenPositions().length > 0) return;
 
@@ -382,6 +394,10 @@ export class LoopingBot {
     }
   }
 
+  /**
+   * Log the top 5 loop candidates from the current cycle.
+   * @param candidates - Ranked loop candidates to display
+   */
   private logTopCandidates(candidates: LoopCandidate[]): void {
     const top = candidates.slice(0, 5);
     if (top.length === 0) {
@@ -398,6 +414,10 @@ export class LoopingBot {
     }
   }
 
+  /**
+   * Get the current status of the bot including running state and positions.
+   * @returns Object with running flag, open positions, and PnL summary
+   */
   getStatus() {
     return {
       running: this.running,

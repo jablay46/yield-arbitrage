@@ -22,12 +22,22 @@ export class GasStrategy {
   private config: GasStrategyConfig;
   private logger?: Logger;
 
+  /**
+   * Create a new GasStrategy instance.
+   * @param client - Viem public client for querying gas prices
+   * @param config - Gas strategy configuration with caps and buffers
+   * @param logger - Optional logger for warnings
+   */
   constructor(client: BasePublicClient, config: GasStrategyConfig, logger?: Logger) {
     this.client = client;
     this.config = config;
     this.logger = logger;
   }
 
+  /**
+   * Calculate EIP-1559 gas fees based on recent block history, capped at configured max.
+   * @returns Gas fees with maxFeePerGas and maxPriorityFeePerGas
+   */
   async getFees(): Promise<GasFees> {
     const maxFeeCap = BigInt(Math.round(this.config.maxGasPriceGwei * 1e9));
 
@@ -81,16 +91,30 @@ export class GasStrategy {
     }
   }
 
-  /** Apply the configured buffer to a gas estimate. */
+  /**
+   * Apply the configured gas buffer to an estimate.
+   * @param estimate - The base gas estimate
+   * @returns Gas estimate with buffer applied
+   */
   applyGasBuffer(estimate: bigint): bigint {
     return estimate + (estimate * BigInt(this.config.gasBufferPercent)) / 100n;
   }
 
+  /**
+   * Check if the current gas price is favorable (less than half of max cap).
+   * @returns True if gas price is favorable for submitting transactions
+   */
   async isGasFavorable(): Promise<boolean> {
     const gasPrice = await this.client.getGasPrice();
     return gasPrice < (BigInt(this.config.maxGasPriceGwei) * GWEI) / 2n;
   }
 
+  /**
+   * Estimate the USD cost of a transaction given gas estimate and ETH price.
+   * @param gasEstimate - The gas estimate for the transaction
+   * @param ethPriceUsd - Current ETH price in USD
+   * @returns Estimated cost in USD
+   */
   async estimateCostUsd(
     gasEstimate: bigint,
     ethPriceUsd: number
