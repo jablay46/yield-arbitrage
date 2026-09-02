@@ -124,9 +124,13 @@ contract LoopingExecutor is FlashloanBase {
     );
     event MinHealthFactorUpdated(uint256 newMinHealthFactor);
     event CriticalHealthFactorUpdated(uint256 newCriticalHealthFactor);
-    event SwapRouterUpdated(address indexed newRouter);
-    event OracleUpdated(address indexed newOracle);
-    event PositionReset(address indexed collateralAsset, address indexed borrowAsset);
+    // Keep these events unindexed for log-encoding compatibility with
+    // deployed instances and existing consumers.
+    // forge-lint: disable-start(event-fields)
+    event SwapRouterUpdated(address newRouter);
+    event OracleUpdated(address newOracle);
+    event PositionReset(address collateralAsset, address borrowAsset);
+    // forge-lint: disable-end(event-fields)
 
     constructor(
         address _morpho,
