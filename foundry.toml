@@ -18,6 +18,12 @@ baseSepolia = "${BASE_SEPOLIA_RPC_URL}"
 [etherscan]
 base = { key = "${ETHERSCAN_API_KEY}" }
 
+# Interface files deliberately group related interfaces in one file, and
+# tests use literals liberally. Both noisy rules are disabled here; the few
+# intentional patterns elsewhere use inline forge-lint directives.
+[lint]
+exclude_lints = ["literal-instead-of-constant", "multi-contract-file"]
+
 [profile.ci]
 src = "contracts"
 out = "out"

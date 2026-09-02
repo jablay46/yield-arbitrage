@@ -28,8 +28,8 @@ contract LoopingExecutorForkTest is Test {
     ILendingPool pool = ILendingPool(AAVE_POOL);
     IAaveOracle aaveOracle = IAaveOracle(AAVE_ORACLE);
 
-    address aWETH;
-    address debtWETH;
+    address aWeth;
+    address debtWeth;
 
     function setUp() public {
         // Pin the fork block: Aave's Pool implementation on recent Base blocks
@@ -37,10 +37,12 @@ contract LoopingExecutorForkTest is Test {
         // halt on the Aave flashloan path). Override with FORK_BLOCK to run
         // against a different height.
         uint256 forkBlock = vm.envOr("FORK_BLOCK", uint256(50_000_000));
+        // forge-lint: disable-start(unused-return)
         vm.createSelectFork(
             vm.envOr("BASE_RPC_URL", string("https://mainnet.base.org")),
             forkBlock
         );
+        // forge-lint: disable-end(unused-return)
 
         executor = new LoopingExecutorHarness(
             MORPHO,
@@ -51,25 +53,26 @@ contract LoopingExecutorForkTest is Test {
         );
 
         ReserveData memory rd = pool.getReserveData(WETH);
-        aWETH = rd.aTokenAddress;
-        debtWETH = rd.variableDebtTokenAddress;
+        aWeth = rd.aTokenAddress;
+        debtWeth = rd.variableDebtTokenAddress;
 
         deal(WETH, address(this), 100 ether);
+        // forge-lint: disable-next-line(unused-return)
         IERC20(WETH).approve(address(executor), type(uint256).max);
     }
 
     function _params(
         uint8 leverage,
         uint256 margin,
-        uint256 minHF
-    ) internal view returns (LoopingExecutor.LoopParams memory) {
+        uint256 minHf
+    ) internal pure returns (LoopingExecutor.LoopParams memory) {
         return
             LoopingExecutor.LoopParams({
                 collateralAsset: WETH,
                 borrowAsset: WETH,
                 marginAmount: margin,
                 leverage: leverage,
-                minHealthFactor: minHF,
+                minHealthFactor: minHf,
                 swapData: "",
                 minSwapOut: 0
             });
@@ -108,13 +111,13 @@ contract LoopingExecutorForkTest is Test {
         executor.openLoop(_params(2, 1 ether, 0));
 
         assertApproxEqAbs(
-            IERC20(aWETH).balanceOf(address(executor)),
+            IERC20(aWeth).balanceOf(address(executor)),
             2 ether,
             2,
             "collateral"
         );
         assertApproxEqAbs(
-            IERC20(debtWETH).balanceOf(address(executor)),
+            IERC20(debtWeth).balanceOf(address(executor)),
             1 ether,
             2,
             "debt"
@@ -126,8 +129,8 @@ contract LoopingExecutorForkTest is Test {
     function test_openLoop_3x_morpho() public {
         executor.openLoop(_params(3, 1 ether, 0));
 
-        assertApproxEqAbs(IERC20(aWETH).balanceOf(address(executor)), 3 ether, 2);
-        assertApproxEqAbs(IERC20(debtWETH).balanceOf(address(executor)), 2 ether, 2);
+        assertApproxEqAbs(IERC20(aWeth).balanceOf(address(executor)), 3 ether, 2);
+        assertApproxEqAbs(IERC20(debtWeth).balanceOf(address(executor)), 2 ether, 2);
         assertGe(executor.currentHealthFactor(), 1.05e18);
     }
 
@@ -136,7 +139,9 @@ contract LoopingExecutorForkTest is Test {
         // the borrowable edge, so Aave rejects the borrow with
         // CollateralCannotCoverNewBorrow before the HF floor is reached. Assert
         // the specific selector rather than a bare expectRevert so the test
-        // cannot pass on an unrelated revert.
+        // cannot pass on an unrelated revert. The keccak prefix is safe
+        // because only the first 4 bytes (the selector) are kept.
+        // forge-lint: disable-next-line(unsafe-typecast)
         vm.expectRevert(bytes4(keccak256("CollateralCannotCoverNewBorrow()")));
         executor.openLoop(_params(5, 1 ether, 0));
     }
@@ -149,13 +154,13 @@ contract LoopingExecutorForkTest is Test {
         uint256 expectedCollateral = 5 ether;
         uint256 expectedDebt = 4 ether;
         assertApproxEqAbs(
-            IERC20(aWETH).balanceOf(address(executor)),
+            IERC20(aWeth).balanceOf(address(executor)),
             expectedCollateral,
             2,
             "collateral"
         );
         assertApproxEqAbs(
-            IERC20(debtWETH).balanceOf(address(executor)),
+            IERC20(debtWeth).balanceOf(address(executor)),
             expectedDebt,
             2,
             "debt"
@@ -169,10 +174,10 @@ contract LoopingExecutorForkTest is Test {
         executor.openLoop(_params(2, 1 ether, 0));
 
         // Aave charges 5 bps premium -> debt slightly above 1 ether
-        uint256 debt = IERC20(debtWETH).balanceOf(address(executor));
+        uint256 debt = IERC20(debtWeth).balanceOf(address(executor));
         assertGt(debt, 1 ether, "aave premium borrowed");
         assertLt(debt, 1.0006 ether, "premium bound");
-        assertApproxEqAbs(IERC20(aWETH).balanceOf(address(executor)), 2 ether, 2);
+        assertApproxEqAbs(IERC20(aWeth).balanceOf(address(executor)), 2 ether, 2);
     }
 
     function test_openLoop_reverts_for_invalid_leverage() public {
@@ -219,8 +224,8 @@ contract LoopingExecutorForkTest is Test {
         );
 
         assertFalse(executor.positionOpen());
-        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
-        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
+        assertEq(IERC20(aWeth).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWeth).balanceOf(address(executor)), 0, "no debt left");
 
         uint256 afterBal = IERC20(WETH).balanceOf(address(this));
         // Same-block unwind: margin back, zero-fee flashloan (Morpho).
@@ -429,8 +434,8 @@ contract LoopingExecutorForkTest is Test {
         executor.keeperDeleverage(cp);
 
         assertFalse(executor.positionOpen());
-        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
-        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
+        assertEq(IERC20(aWeth).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWeth).balanceOf(address(executor)), 0, "no debt left");
     }
 
     function test_keeperDeleverage_works_when_paused() public {
@@ -451,8 +456,8 @@ contract LoopingExecutorForkTest is Test {
         executor.keeperDeleverage(cp);
 
         assertFalse(executor.positionOpen());
-        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "no collateral left");
-        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "no debt left");
+        assertEq(IERC20(aWeth).balanceOf(address(executor)), 0, "no collateral left");
+        assertEq(IERC20(debtWeth).balanceOf(address(executor)), 0, "no debt left");
     }
 
     // ---------- emergencyWithdraw guard ----------
@@ -483,12 +488,12 @@ contract LoopingExecutorForkTest is Test {
         // loop just as directly as the underlying — pulling it would strand
         // the position, so it must be blocked too.
         executor.openLoop(_params(2, 1 ether, 0));
-        uint256 aBal = IERC20(aWETH).balanceOf(address(executor));
+        uint256 aBal = IERC20(aWeth).balanceOf(address(executor));
         assertGt(aBal, 0);
         vm.expectRevert(
-            abi.encodeWithSelector(LoopingExecutor.CannotWithdrawActiveAsset.selector, aWETH)
+            abi.encodeWithSelector(LoopingExecutor.CannotWithdrawActiveAsset.selector, aWeth)
         );
-        executor.emergencyWithdraw(aWETH, aBal);
+        executor.emergencyWithdraw(aWeth, aBal);
     }
 
     // ---------- resetPosition escape hatch ----------
@@ -526,8 +531,10 @@ contract LoopingExecutorForkTest is Test {
         // the stale flag. Aave requires an explicit amount when repaying on
         // behalf of another address (the max sentinel only works for self).
         uint256 debt = executor.currentDebt(WETH);
+        // forge-lint: disable-start(unused-return)
         IERC20(WETH).approve(AAVE_POOL, debt);
         pool.repay(WETH, debt, 2, address(executor));
+        // forge-lint: disable-end(unused-return)
         assertEq(executor.currentDebt(WETH), 0);
 
         LoopingExecutor.CloseParams memory cp = LoopingExecutor.CloseParams({
@@ -547,9 +554,9 @@ contract LoopingExecutorForkTest is Test {
         assertFalse(executor.positionOpen());
 
         // Residual aToken collateral becomes rescuable once the flag clears.
-        uint256 aBal = IERC20(aWETH).balanceOf(address(executor));
+        uint256 aBal = IERC20(aWeth).balanceOf(address(executor));
         assertGt(aBal, 0);
-        executor.emergencyWithdraw(aWETH, aBal);
+        executor.emergencyWithdraw(aWeth, aBal);
 
         // And the contract can open again.
         executor.openLoop(_params(2, 1 ether, 0));
@@ -603,8 +610,8 @@ contract LoopingExecutorForkTest is Test {
                 minSwapOut: 0
             })
         );
-        assertEq(IERC20(aWETH).balanceOf(address(executor)), 0, "aToken residue");
-        assertEq(IERC20(debtWETH).balanceOf(address(executor)), 0, "debt residue");
+        assertEq(IERC20(aWeth).balanceOf(address(executor)), 0, "aToken residue");
+        assertEq(IERC20(debtWeth).balanceOf(address(executor)), 0, "debt residue");
         // Margin returned (zero-fee Morpho flashloan, same-block unwind).
         assertApproxEqAbs(
             IERC20(WETH).balanceOf(address(this)) - before,
