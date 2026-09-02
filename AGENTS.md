@@ -10,7 +10,16 @@ Repository-specific notes for the yield-arbitrage project (Base mainnet leverage
 
 ## Build / test commands
 
-- `forge build` — compiles contracts (warnings are lint notes, not errors).
+- `forge build` — compiles contracts. Warnings were cleaned in
+  `fix/audit-findings-2026-09` (PR #8); keep `forge lint` at zero.
+- `forge lint` — expected to be clean. Rules `literal-instead-of-constant`
+  and `multi-contract-file` are excluded repo-wide in `foundry.toml`;
+  intentional patterns use inline directives. Directive syntax notes:
+  `// forge-lint: disable-next-line(id)` only spans the next line — for
+  multiline statements use `disable-start(id)`/`disable-end(id)`; bare
+  `disable-next-line` disables all rules. The `[lint] ignore` project
+  config doesn't reliably suppress test paths on forge 1.8.1 — prefer
+  inline directives or the CLI-flagged `--ignore`.
 - `forge test` — full Base fork suite (43/43). Needs `BASE_RPC_URL`; `FORK_BLOCK` is optional (defaults to 50M). Tests pass at the pinned block and at the latest block.
 - `cd bot && npm run build && npm test` — bot type-check + 83 unit tests.
 
