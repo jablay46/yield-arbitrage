@@ -51,8 +51,12 @@ abstract contract FlashloanBase is
         uint256 amount
     );
     event FlashloanSourceChanged(FlashloanSource newSource);
+    // Keep these events unindexed for log-encoding compatibility with
+    // deployed instances and existing consumers.
+    // forge-lint: disable-start(event-fields)
     event AavePoolUpdated(address newPool);
     event MorphoUpdated(address newMorpho);
+    // forge-lint: disable-end(event-fields)
     event EmergencyWithdraw(
         address indexed token,
         uint256 amount,
@@ -111,6 +115,9 @@ abstract contract FlashloanBase is
 
         if (preferredSource == FlashloanSource.Morpho) {
             _activeFlashAsset = asset;
+            // Reentrancy into the callback is guarded by the entry
+            // functions' nonReentrant modifier in LoopingExecutor.
+            // forge-lint: disable-next-line(reentrancy-no-eth)
             IMorpho(morpho).flashLoan(asset, amount, data);
             _activeFlashAsset = address(0);
         } else {
@@ -123,6 +130,7 @@ abstract contract FlashloanBase is
             uint256[] memory modes = new uint256[](1);
             modes[0] = 0; // 0 = no debt, full repayment
 
+            // forge-lint: disable-start(reentrancy-no-eth)
             IAavePool(aavePool).flashLoan(
                 address(this),
                 assets,
@@ -132,6 +140,7 @@ abstract contract FlashloanBase is
                 data,
                 0
             );
+            // forge-lint: disable-end(reentrancy-no-eth)
         }
     }
 

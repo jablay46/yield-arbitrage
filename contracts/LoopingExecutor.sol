@@ -124,9 +124,13 @@ contract LoopingExecutor is FlashloanBase {
     );
     event MinHealthFactorUpdated(uint256 newMinHealthFactor);
     event CriticalHealthFactorUpdated(uint256 newCriticalHealthFactor);
+    // Keep these events unindexed for log-encoding compatibility with
+    // deployed instances and existing consumers.
+    // forge-lint: disable-start(event-fields)
     event SwapRouterUpdated(address newRouter);
     event OracleUpdated(address newOracle);
     event PositionReset(address collateralAsset, address borrowAsset);
+    // forge-lint: disable-end(event-fields)
 
     constructor(
         address _morpho,
@@ -152,7 +156,7 @@ contract LoopingExecutor is FlashloanBase {
      */
     function openLoop(
         LoopParams calldata p
-    ) external onlyOwner nonReentrant whenNotPaused {
+    ) external nonReentrant onlyOwner whenNotPaused {
         if (p.leverage != 2 && p.leverage != 3 && p.leverage != 5) {
             revert UnsupportedLeverage(p.leverage);
         }
@@ -187,7 +191,7 @@ contract LoopingExecutor is FlashloanBase {
      */
     function closeLoop(
         CloseParams calldata p
-    ) external onlyOwner nonReentrant whenNotPaused {
+    ) external nonReentrant onlyOwner whenNotPaused {
         _closeLoop(p);
     }
 
@@ -208,6 +212,7 @@ contract LoopingExecutor is FlashloanBase {
     ) external nonReentrant {
         if (!positionOpen) revert NoOpenPosition();
 
+        // forge-lint: disable-next-line(unused-return)
         (, , , , , uint256 hf) = lendingPool.getUserAccountData(address(this));
         if (hf >= criticalHealthFactor)
             revert HealthFactorNotCritical(hf, criticalHealthFactor);
@@ -272,6 +277,7 @@ contract LoopingExecutor is FlashloanBase {
      * @notice Current health factor of this contract (WAD)
      */
     function currentHealthFactor() external view returns (uint256) {
+        // forge-lint: disable-next-line(unused-return)
         (, , , , , uint256 hf) = lendingPool.getUserAccountData(address(this));
         return hf;
     }
@@ -351,9 +357,11 @@ contract LoopingExecutor is FlashloanBase {
         if (minimum < MIN_HEALTH_FACTOR_FLOOR) {
             minimum = MIN_HEALTH_FACTOR_FLOOR;
         }
+        // forge-lint: disable-next-line(unused-return)
         (, , , , , uint256 hf) = lendingPool.getUserAccountData(address(this));
         if (hf < minimum) revert HealthFactorTooLow(hf, minimum);
 
+        // forge-lint: disable-start(reentrancy-events)
         emit LoopOpened(
             p.collateralAsset,
             p.borrowAsset,
@@ -363,6 +371,7 @@ contract LoopingExecutor is FlashloanBase {
             p.leverage,
             hf
         );
+        // forge-lint: disable-end(reentrancy-events)
     }
 
     /**
@@ -387,12 +396,14 @@ contract LoopingExecutor is FlashloanBase {
             address(this)
         );
         IERC20(p.borrowAsset).forceApprove(address(lendingPool), flashAmount);
+        // forge-lint: disable-start(unused-return)
         lendingPool.repay(
             p.borrowAsset,
             type(uint256).max,
             VARIABLE_RATE_MODE,
             address(this)
         );
+        // forge-lint: disable-end(unused-return)
         uint256 remaining = IERC20(rd.variableDebtTokenAddress).balanceOf(
             address(this)
         );
@@ -436,6 +447,7 @@ contract LoopingExecutor is FlashloanBase {
         // 5. Clear the recorded position now that the unwind succeeded.
         delete openPosition;
 
+        // forge-lint: disable-next-line(reentrancy-events)
         emit LoopClosed(p.collateralAsset, p.borrowAsset, debt, withdrawn);
     }
 
@@ -474,8 +486,10 @@ contract LoopingExecutor is FlashloanBase {
         IERC20(tokenIn).forceApprove(swapRouter, amountIn);
         uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
 
+        // forge-lint: disable-next-line(low-level-calls)
         (bool success, bytes memory returndata) = swapRouter.call(swapData);
         if (!success) {
+            // forge-lint: disable-next-line(inline-assembly)
             assembly {
                 revert(add(returndata, 32), mload(returndata))
             }
